@@ -1,0 +1,88 @@
+# =========================
+# OS junk
+# =========================
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# =========================
+# Editors / IDEs
+# =========================
+.vscode/
+.idea/
+_ReSharper*/
+*.DotSettings.user
+
+# Visual Studio
+.vs/
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+*.rsuser
+*.cache
+*.VC.db
+*.VC.VC.opendb
+*.opendb
+
+# =========================
+# Build output
+# =========================
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+TestResults/
+artifacts/
+publish/
+
+# =========================
+# NuGet / packages
+# =========================
+# packages/  
+*.nupkg
+*.snupkg
+
+# =========================
+# Logs / temp / backup
+# =========================
+*.log
+*.trace
+*.dmp
+*.mdmp
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+
+# =========================
+# Coverage / tests
+# =========================
+*.coverage
+*.coveragexml
+*.trx
+
+# =========================
+# Packaging / installers
+# =========================
+*.msi
+*.msp
+*.msm
+*.appx
+*.appxbundle
+*.msix
+*.msixbundle
+*.publishsettings
+*.pubxml.user
+
+# =========================
+# Local secrets / machine-specific settings
+# =========================
+secrets.json
+appsettings.Local.json
+appsettings.*.local.json
+*.local.json
+*.secret
+*.secrets
