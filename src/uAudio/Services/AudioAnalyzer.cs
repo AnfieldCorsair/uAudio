@@ -1,54 +1,122 @@
-﻿using NAudio.Wave;
-using System;
-using System.Linq;
+﻿using System;
+using System.IO;
+using NAudio.Wave;
 
-namespace uAudio.Services
+namespace uAudioEditorPro.Services
 {
     public static class AudioAnalyzer
     {
-        // Метод возвращает массив float (громкость от 0 до 1)
-        public static float[] GetWaveform(string filePath, int pointCount = 2000)
+        public static float[] GetPeaks(string filePath, int peakCount, double offsetInFile, double duration)
         {
+            int safePeakCount = Math.Max(peakCount, 1);
+            float[] peaks = new float[safePeakCount];
+
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath) || duration <= 0d)
+            {
+                return peaks;
+            }
+
             try
             {
-                using (var reader = new AudioFileReader(filePath))
+                using AudioFileReader reader = new AudioFileReader(filePath);
+
+                double totalSeconds = reader.TotalTime.TotalSeconds;
+                if (totalSeconds <= 0d)
                 {
-                    // Длина одного кусочка в семплах
-                    long totalSamples = reader.Length / (reader.WaveFormat.BitsPerSample / 8);
-                    int samplesPerPoint = (int)(totalSamples / pointCount);
+                    return peaks;
+                }
 
-                    // Если файл очень короткий
-                    if (samplesPerPoint < 1) samplesPerPoint = 1;
+                double clampedOffset = Math.Max(0d, Math.Min(offsetInFile, totalSeconds));
+                double availableDuration = Math.Max(0d, totalSeconds - clampedOffset);
+                double clampedDuration = Math.Max(0d, Math.Min(duration, availableDuration));
 
-                    float[] waveform = new float[pointCount];
-                    float[] buffer = new float[samplesPerPoint];
+                if (clampedDuration <= 0d)
+                {
+                    return peaks;
+                }
 
-                    // Читаем файл кусками
-                    for (int i = 0; i < pointCount; i++)
+                reader.CurrentTime = TimeSpan.FromSeconds(clampedOffset);
+
+                int channels = Math.Max(reader.WaveFormat.Channels, 1);
+                int sampleRate = Math.Max(reader.WaveFormat.SampleRate, 1);
+
+                long totalFramesToRead = Math.Max(1L, (long)Math.Ceiling(clampedDuration * sampleRate));
+                long framesPerPeak = Math.Max(1L, totalFramesToRead / safePeakCount);
+
+                int maxBufferSamples = Math.Max(channels * 4096, 4096);
+                float[] buffer = new float[maxBufferSamples];
+
+                int peakIndex = 0;
+                long framesProcessed = 0;
+
+                while (peakIndex < safePeakCount && framesProcessed < totalFramesToRead)
+                {
+                    long targetFramesForPeak = Math.Min(framesPerPeak, totalFramesToRead - framesProcessed);
+                    long peakFramesRead = 0;
+                    float peakMax = 0f;
+
+                    while (peakFramesRead < targetFramesForPeak)
                     {
-                        // Читаем кусок аудио
-                        int samplesRead = reader.Read(buffer, 0, samplesPerPoint);
-                        if (samplesRead == 0) break;
+                        long framesLeftForPeak = targetFramesForPeak - peakFramesRead;
+                        int samplesToRead = (int)Math.Min(framesLeftForPeak * channels, buffer.Length);
 
-                        // Находим максимальную громкость в этом куске (пик)
-                        // Max() может быть медленным, можно оптимизировать, но для MVP пойдет
-                        float max = 0;
-                        for (int n = 0; n < samplesRead; n++)
+                        int samplesRead = reader.Read(buffer, 0, samplesToRead);
+                        if (samplesRead <= 0)
                         {
-                            float val = Math.Abs(buffer[n]);
-                            if (val > max) max = val;
+                            break;
                         }
 
-                        waveform[i] = max;
+                        for (int i = 0; i < samplesRead; i++)
+                        {
+                            float value = Math.Abs(buffer[i]);
+                            if (value > peakMax)
+                            {
+                                peakMax = value;
+                            }
+                        }
+
+                        long framesRead = samplesRead / channels;
+                        peakFramesRead += framesRead;
+
+                        if (framesRead == 0)
+                        {
+                            break;
+                        }
                     }
 
-                    return waveform;
+                    peaks[peakIndex] = peakMax;
+                    peakIndex++;
+                    framesProcessed += peakFramesRead;
+
+                    if (peakFramesRead == 0)
+                    {
+                        break;
+                    }
                 }
+
+                return peaks;
             }
             catch
             {
-                // Если ошибка - возвращаем пустой массив
-                return new float[pointCount];
+                return peaks;
+            }
+        }
+
+        public static double GetFileDuration(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            {
+                return 0d;
+            }
+
+            try
+            {
+                using AudioFileReader reader = new AudioFileReader(filePath);
+                return reader.TotalTime.TotalSeconds;
+            }
+            catch
+            {
+                return 0d;
             }
         }
     }
