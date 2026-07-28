@@ -1,0 +1,60 @@
+﻿<UserControl x:Class="uAudio.Controls.TrackRowControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Height="100" Background="#1E1E1E" Margin="0,1,0,0">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="150"/>
+            <!-- Панель управления слева -->
+            <ColumnDefinition Width="*"/>
+            <!-- Область таймлайна -->
+        </Grid.ColumnDefinitions>
+
+        <!-- Левая панель: Имя, Громкость, Удалить -->
+        <Border Background="#2D2D30" BorderBrush="#3E3E42" BorderThickness="0,0,1,0">
+            <StackPanel Margin="10">
+                <DockPanel LastChildFill="False">
+                    <TextBlock Text="TRACK" Foreground="#007ACC" FontWeight="Bold" FontSize="10" VerticalAlignment="Center"/>
+                    <Button x:Name="BtnDelete" Content="❌" Background="Transparent" BorderThickness="0" Foreground="#FF5555" Cursor="Hand" DockPanel.Dock="Right"/>
+                </DockPanel>
+
+                <TextBlock x:Name="FileNameText" Text="Audio.mp3" Foreground="White" TextTrimming="CharacterEllipsis" Margin="0,5,0,5" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+
+                <TextBlock Text="Volume" Foreground="Gray" FontSize="10"/>
+                <Slider x:Name="VolumeSlider" Minimum="0" Maximum="1" Value="1" Style="{StaticResource {x:Type Slider}}"/>
+
+                <CheckBox x:Name="MuteCheckBox" Content="Mute" Foreground="Gray" FontSize="10" Margin="0,5,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Правая панель: Канвас, где живет наш трек -->
+        <!-- ClipToBounds="True" чтобы волна не вылезала за пределы строки -->
+        <Canvas Grid.Column="1" x:Name="TimelineCanvas" Background="#181818" ClipToBounds="True">
+
+            <!-- Сам аудио-клип (Группа элементов, которую будем таскать) -->
+            <Border x:Name="AudioClipContainer" 
+                    Canvas.Left="0" Canvas.Top="10" 
+                    Height="80" 
+                    CornerRadius="3"
+                    Background="#333333"
+                    BorderBrush="#007ACC" BorderThickness="1"
+                    Cursor="SizeAll"
+                    MouseLeftButtonDown="AudioClip_MouseDown"
+                    MouseLeftButtonUp="AudioClip_MouseUp"
+                    MouseMove="AudioClip_MouseMove">
+
+                <Grid>
+                    <!-- Фон клипа (для красоты) -->
+                    <Rectangle Fill="#22007ACC" Opacity="0.3" RadiusX="3" RadiusY="3"/>
+
+                    <!-- Сама волна -->
+                    <Polygon x:Name="WaveformPolyline" Fill="#00BFFF" Stretch="Fill" VerticalAlignment="Center" Margin="0,5"/>
+
+                    <!-- Название файла внутри клипа (как в Cubase) -->
+                    <TextBlock x:Name="ClipNameText" Text="Clip" Foreground="#88FFFFFF" FontSize="9" Margin="5,2,0,0" VerticalAlignment="Top"/>
+                </Grid>
+            </Border>
+
+        </Canvas>
+    </Grid>
+</UserControl>
