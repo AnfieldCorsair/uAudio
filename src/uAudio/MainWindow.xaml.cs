@@ -10,17 +10,15 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using Microsoft.Win32;
-using uAudioEditorPro.Controls;
-using uAudioEditorPro.Models;
-using uAudioEditorPro.Services;
+using uAudio.Controls;
+using uAudio.Models;
+using uAudio.Services;
 using IoPath = System.IO.Path;
 
-namespace uAudioEditorPro
+namespace uAudio
 {
     public partial class MainWindow : Window
     {
-        private const double LeftPanelWidth = 160d;
-        private const double AutosaveIntervalSeconds = 30d;
         private const string DefaultProjectName = "Untitled";
         private const string ProjectFileFilter = "uAudio Project|*.uaudioproj|JSON files|*.json|All files|*.*";
         private const string ExportFileFilter = "Wave PCM (*.wav)|*.wav";
@@ -30,31 +28,47 @@ namespace uAudioEditorPro
             nameof(ExportMixCommand),
             typeof(MainWindow));
 
-        private readonly AudioPlaybackEngine _engine = new AudioPlaybackEngine(44100, 2);
+        public static readonly RoutedUICommand AddTrackCommand = new RoutedUICommand("Add Track", nameof(AddTrackCommand), typeof(MainWindow));
+        public static readonly RoutedUICommand PlayPauseCommand = new RoutedUICommand("Play/Pause", nameof(PlayPauseCommand), typeof(MainWindow));
+        public static readonly RoutedUICommand StopPlaybackCommand = new RoutedUICommand("Stop", nameof(StopPlaybackCommand), typeof(MainWindow));
+        public static readonly RoutedUICommand ZoomInCommand = new RoutedUICommand("Zoom In", nameof(ZoomInCommand), typeof(MainWindow));
+        public static readonly RoutedUICommand ZoomOutCommand = new RoutedUICommand("Zoom Out", nameof(ZoomOutCommand), typeof(MainWindow));
+        public static readonly RoutedUICommand ResetZoomCommand = new RoutedUICommand("Reset Zoom", nameof(ResetZoomCommand), typeof(MainWindow));
+        public static readonly RoutedUICommand CutSelectionCommand = new RoutedUICommand("Cut Selection", nameof(CutSelectionCommand), typeof(MainWindow));
+        public static readonly RoutedUICommand TrimSelectionCommand = new RoutedUICommand("Trim Selection", nameof(TrimSelectionCommand), typeof(MainWindow));
+        public static readonly RoutedUICommand ShowShortcutsCommand = new RoutedUICommand("Shortcuts", nameof(ShowShortcutsCommand), typeof(MainWindow));
+
+        private readonly AudioPlaybackEngine _engine = new AudioPlaybackEngine();
         private readonly List<TrackRowControl> _trackControls = new List<TrackRowControl>();
         private readonly DispatcherTimer _playheadTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(30)
+            Interval = TimeSpan.FromMilliseconds(AppConstants.PlayheadRefreshMilliseconds)
         };
         private readonly DispatcherTimer _autosaveTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromSeconds(AutosaveIntervalSeconds)
+            Interval = TimeSpan.FromSeconds(AppConstants.AutosaveIntervalSeconds)
+        };
+        private readonly DispatcherTimer _zoomRedrawTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(AppConstants.ZoomRedrawDebounceMilliseconds)
         };
 
         private string? _currentProjectPath;
         private string _savedStateSignature = string.Empty;
         private int _trackCounter;
         private DateTime? _lastAutosaveUtc;
-        private double _pixelsPerSecond = 100d;
+        private double _pixelsPerSecond = AppConstants.DefaultPixelsPerSecond;
         private bool _isAutosaveInProgress;
         private bool _isProjectDirty;
         private bool _suppressDirtyTracking;
         private bool _uiInitialized;
+        private TrackRowControl? _activeSelectionTrack;
 
         public MainWindow()
         {
             _playheadTimer.Tick += PlayheadTimer_Tick;
             _autosaveTimer.Tick += AutosaveTimer_Tick;
+            _zoomRedrawTimer.Tick += ZoomRedrawTimer_Tick;
 
             InitializeComponent();
 
@@ -152,6 +166,11 @@ namespace uAudioEditorPro
         private void DeleteTrack(TrackRowControl trackControl)
         {
             ClearSelectionVisualsExcept(null);
+            if (ReferenceEquals(_activeSelectionTrack, trackControl))
+            {
+                _activeSelectionTrack = null;
+            }
+
             UnwireTrackControl(trackControl);
 
             if (trackControl.SampleProvider != null)
@@ -209,6 +228,17 @@ namespace uAudioEditorPro
 
         private void TrackControl_SelectionPreviewChanged(TrackRowControl sourceTrack, double start, double end, bool isActive)
         {
+            if (isActive)
+            {
+                _activeSelectionTrack = sourceTrack;
+            }
+            else if (ReferenceEquals(_activeSelectionTrack, sourceTrack))
+            {
+                _activeSelectionTrack = null;
+            }
+
+            CommandManager.InvalidateRequerySuggested();
+
             if (EditAllTracksCheckBox == null || EditAllTracksCheckBox.IsChecked != true || !isActive)
             {
                 ClearSelectionVisualsExcept(sourceTrack);
@@ -254,6 +284,18 @@ namespace uAudioEditorPro
             _engine.Stop();
         }
 
+        private void TogglePlayPause()
+        {
+            if (_engine.IsPlaying)
+            {
+                _engine.Pause();
+            }
+            else
+            {
+                _engine.Play();
+            }
+        }
+
         private void ZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             _pixelsPerSecond = ZoomSlider != null ? ZoomSlider.Value : e.NewValue;
@@ -264,14 +306,50 @@ namespace uAudioEditorPro
                 return;
             }
 
-            foreach (TrackRowControl track in _trackControls)
-            {
-                track.PixelsPerSecond = _pixelsPerSecond;
-            }
-
             UpdateTimelineWidth();
+            ScheduleZoomRedraw();
+        }
+
+        private void ScheduleZoomRedraw()
+        {
+            _zoomRedrawTimer.Stop();
+            _zoomRedrawTimer.Start();
+        }
+
+        private void ZoomRedrawTimer_Tick(object? sender, EventArgs e)
+        {
+            _zoomRedrawTimer.Stop();
+            ApplyZoomToTracks(redraw: true);
             DrawRuler();
             RefreshDirtyState();
+        }
+
+        private void ApplyZoomToTracks(bool redraw)
+        {
+            foreach (TrackRowControl track in _trackControls)
+            {
+                track.SetPixelsPerSecond(_pixelsPerSecond, redraw);
+            }
+        }
+
+        private void ChangeZoom(double delta)
+        {
+            if (ZoomSlider == null)
+            {
+                return;
+            }
+
+            ZoomSlider.Value = Math.Clamp(ZoomSlider.Value + delta, ZoomSlider.Minimum, ZoomSlider.Maximum);
+        }
+
+        private void ResetZoom()
+        {
+            if (ZoomSlider == null)
+            {
+                return;
+            }
+
+            ZoomSlider.Value = AppConstants.DefaultPixelsPerSecond;
         }
 
         private void EditAllTracksCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -306,8 +384,9 @@ namespace uAudioEditorPro
                 _lastAutosaveUtc = DateTime.Now;
                 UpdateAutosaveStatusText();
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warning("Autosave failed.", ex);
                 if (AutosaveStatusText != null)
                 {
                     AutosaveStatusText.Text = "Autosave failed";
@@ -336,7 +415,7 @@ namespace uAudioEditorPro
             }
 
             double time = _engine.GlobalTime;
-            double x = LeftPanelWidth + (time * _pixelsPerSecond);
+            double x = AppConstants.LeftPanelWidth + (time * _pixelsPerSecond);
 
             PlayheadLine.X1 = x;
             PlayheadLine.X2 = x;
@@ -346,9 +425,7 @@ namespace uAudioEditorPro
             PlayheadCanvas.Width = Math.Max(TimelineGrid.ActualWidth, TimelineGrid.MinWidth);
             PlayheadCanvas.Height = PlayheadLine.Y2;
 
-            int minutes = (int)(time / 60d);
-            double seconds = time - (minutes * 60d);
-            TimeDisplay.Text = $"{minutes:D2}:{seconds:06.3F}";
+            TimeDisplay.Text = TimeFormatService.FormatTimelineTime(time);
 
             if (_engine.IsPlaying)
             {
@@ -377,8 +454,8 @@ namespace uAudioEditorPro
 
             RulerCanvas.Children.Clear();
 
-            double totalDuration = GetMaxDuration() + 30d;
-            double totalWidth = LeftPanelWidth + (totalDuration * _pixelsPerSecond);
+            double totalDuration = GetMaxDuration() + AppConstants.TimelinePaddingSeconds;
+            double totalWidth = AppConstants.LeftPanelWidth + (totalDuration * _pixelsPerSecond);
 
             RulerCanvas.Width = totalWidth;
 
@@ -407,7 +484,7 @@ namespace uAudioEditorPro
             int index = 0;
             for (double t = 0d; t <= totalDuration + 0.0001d; t += stepSeconds, index++)
             {
-                double x = LeftPanelWidth + (t * _pixelsPerSecond);
+                double x = AppConstants.LeftPanelWidth + (t * _pixelsPerSecond);
                 bool major = stepSeconds >= 5d || index % 5 == 0;
 
                 Line tick = new Line
@@ -423,12 +500,7 @@ namespace uAudioEditorPro
 
                 if (major || stepSeconds <= 1d)
                 {
-                    int minutes = (int)(t / 60d);
-                    double seconds = t - (minutes * 60d);
-
-                    string label = minutes > 0
-                        ? $"{minutes}:{seconds:00.0}"
-                        : $"{seconds:0.0}s";
+                    string label = TimeFormatService.FormatRulerLabel(t);
 
                     TextBlock text = new TextBlock
                     {
@@ -453,7 +525,7 @@ namespace uAudioEditorPro
             }
 
             double x = e.GetPosition(RulerCanvas).X;
-            double time = (x - LeftPanelWidth) / _pixelsPerSecond;
+            double time = (x - AppConstants.LeftPanelWidth) / _pixelsPerSecond;
             _engine.Seek(Math.Max(0d, time));
         }
 
@@ -539,6 +611,10 @@ namespace uAudioEditorPro
             {
                 e.CanExecute = HasAudioContent();
             }
+            else if (e.Command == CutSelectionCommand || e.Command == TrimSelectionCommand)
+            {
+                e.CanExecute = _activeSelectionTrack != null && _activeSelectionTrack.HasUsableSelection;
+            }
             else
             {
                 e.CanExecute = true;
@@ -570,6 +646,106 @@ namespace uAudioEditorPro
         private void ExportMixCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
             ExportMix();
+        }
+
+        private void AddTrackCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            SaveUndoSnapshot();
+            AddTrack();
+        }
+
+        private void PlayPauseCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            TogglePlayPause();
+        }
+
+        private void StopPlaybackCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            _engine.Stop();
+        }
+
+        private void ZoomInCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            ChangeZoom(10d);
+        }
+
+        private void ZoomOutCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            ChangeZoom(-10d);
+        }
+
+        private void ResetZoomCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            ResetZoom();
+        }
+
+        private void CutSelectionCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            ExecuteActiveSelection(trimOutside: false);
+        }
+
+        private void TrimSelectionCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            ExecuteActiveSelection(trimOutside: true);
+        }
+
+        private void ShowShortcutsCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            MessageBox.Show(GetShortcutsMemo(), "uAudio shortcuts", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        private void ExecuteActiveSelection(bool trimOutside)
+        {
+            TrackRowControl? selectedTrack = _activeSelectionTrack;
+            if (selectedTrack == null || !selectedTrack.HasUsableSelection)
+            {
+                return;
+            }
+
+            if (trimOutside)
+            {
+                selectedTrack.TryExecuteTrimFromSelection();
+            }
+            else
+            {
+                selectedTrack.TryExecuteCutFromSelection();
+            }
+        }
+
+        private static string GetShortcutsMemo()
+        {
+            return string.Join(Environment.NewLine, new[]
+            {
+                "RU",
+                "Ctrl+N — новый проект",
+                "Ctrl+O — открыть",
+                "Ctrl+S — сохранить",
+                "Ctrl+Shift+S — сохранить как",
+                "Ctrl+E — экспорт WAV",
+                "Ctrl+Z — отменить",
+                "Ctrl+T — добавить дорожку",
+                "Space — play/pause",
+                "Esc — стоп",
+                "Ctrl+X — вырезать выделение",
+                "Ctrl+Shift+X — обрезать вне выделения",
+                "Ctrl++ / Ctrl+- / Ctrl+0 — зум",
+                "F1 — горячие клавиши",
+                string.Empty,
+                "EN",
+                "Ctrl+N — new project",
+                "Ctrl+O — open",
+                "Ctrl+S — save",
+                "Ctrl+Shift+S — save as",
+                "Ctrl+E — export WAV",
+                "Ctrl+Z — undo",
+                "Ctrl+T — add track",
+                "Space — play/pause",
+                "Esc — stop",
+                "Ctrl+X — cut selection",
+                "Ctrl+Shift+X — trim outside selection",
+                "Ctrl++ / Ctrl+- / Ctrl+0 — zoom",
+                "F1 — shortcuts"
+            });
         }
 
         private void CreateNewProject()
@@ -624,8 +800,9 @@ namespace uAudioEditorPro
                 {
                     baselineSignature = ProjectFileService.CreateStateSignature(ProjectFileService.Load(_currentProjectPath).Project);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    AppLogger.Warning("Could not load baseline project during recovery restore.", ex);
                     baselineSignature = string.Empty;
                 }
             }
@@ -755,6 +932,17 @@ namespace uAudioEditorPro
                     message += $"{Environment.NewLine}{Environment.NewLine}Some clips were missing and were rendered as silence:{Environment.NewLine}{preview}";
                 }
 
+                if (result.InvalidFiles.Count > 0)
+                {
+                    string preview = string.Join(Environment.NewLine, result.InvalidFiles.Take(5));
+                    if (result.InvalidFiles.Count > 5)
+                    {
+                        preview += $"{Environment.NewLine}...";
+                    }
+
+                    message += $"{Environment.NewLine}{Environment.NewLine}Some clips had unsupported/damaged formats and were rendered as silence:{Environment.NewLine}{preview}";
+                }
+
                 MessageBox.Show(message, "Export Mix", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
@@ -878,6 +1066,7 @@ namespace uAudioEditorPro
             }
 
             _trackControls.Clear();
+            _activeSelectionTrack = null;
             _trackCounter = 0;
         }
 
@@ -885,8 +1074,8 @@ namespace uAudioEditorPro
         {
             return new ProjectFileModel
             {
-                FormatVersion = 1,
-                AppName = "uAudio Editor Pro",
+                FormatVersion = AppConstants.ProjectFormatVersion,
+                AppName = AppConstants.AppName,
                 PixelsPerSecond = _pixelsPerSecond,
                 EditAllTracks = EditAllTracksCheckBox != null && EditAllTracksCheckBox.IsChecked == true,
                 CurrentTime = _engine.GlobalTime,
@@ -918,8 +1107,9 @@ namespace uAudioEditorPro
             {
                 return IoPath.GetFullPath(filePath);
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warning($"Could not normalize path: {filePath}", ex);
                 return filePath;
             }
         }
@@ -953,7 +1143,7 @@ namespace uAudioEditorPro
         {
             string projectName = GetDisplayProjectName();
             string dirtySuffix = _isProjectDirty ? "*" : string.Empty;
-            Title = $"uAudio Editor Pro - {projectName}{dirtySuffix}";
+            Title = $"uAudio - {projectName}{dirtySuffix}";
         }
 
         private void UpdateProjectPathText()
@@ -1091,8 +1281,8 @@ namespace uAudioEditorPro
                 return;
             }
 
-            double totalDuration = GetMaxDuration() + 30d;
-            double totalWidth = LeftPanelWidth + (totalDuration * _pixelsPerSecond);
+            double totalDuration = GetMaxDuration() + AppConstants.TimelinePaddingSeconds;
+            double totalWidth = AppConstants.LeftPanelWidth + (totalDuration * _pixelsPerSecond);
 
             TimelineGrid.MinWidth = totalWidth;
             PlayheadCanvas.Width = totalWidth;
@@ -1137,6 +1327,7 @@ namespace uAudioEditorPro
             ClearRecoveryState();
             _playheadTimer.Stop();
             _autosaveTimer.Stop();
+            _zoomRedrawTimer.Stop();
             UndoManager.Clear();
             _engine.Dispose();
         }

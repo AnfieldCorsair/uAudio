@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -8,18 +8,20 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using Microsoft.Win32;
-using uAudioEditorPro.Models;
-using uAudioEditorPro.Services;
+using uAudio;
+using uAudio.Models;
+using uAudio.Services;
 using IoPath = System.IO.Path;
 
-namespace uAudioEditorPro.Controls
+namespace uAudio.Controls
 {
     public partial class TrackRowControl : UserControl
     {
         private const double ClipHeight = 100d;
         private const double SelectionMinWidthPixels = 3d;
         private const double DragThresholdPixels = 2d;
-        private const double DurationEpsilon = 1e-7;
+        private const double ClipGapSeconds = 0.5d;
+        private const double DurationEpsilon = AppConstants.TimeComparisonEpsilonSeconds;
 
         public List<AudioClipModel> Clips { get; private set; } = new List<AudioClipModel>();
 
@@ -27,20 +29,26 @@ namespace uAudioEditorPro.Controls
 
         public string TrackName { get; private set; } = "Track";
 
-        private double _pixelsPerSecond = 100d;
+        private double _pixelsPerSecond = AppConstants.DefaultPixelsPerSecond;
         private bool _uiInitialized;
 
         public double PixelsPerSecond
         {
             get => _pixelsPerSecond;
-            set
-            {
-                _pixelsPerSecond = Math.Max(5d, value);
+            set => SetPixelsPerSecond(value, redraw: true);
+        }
 
-                if (_uiInitialized)
-                {
-                    RedrawClips();
-                }
+        public void SetPixelsPerSecond(double value, bool redraw)
+        {
+            _pixelsPerSecond = Math.Clamp(value, AppConstants.MinPixelsPerSecond, AppConstants.MaxPixelsPerSecond);
+
+            if (_uiInitialized && redraw)
+            {
+                RedrawClips();
+            }
+            else
+            {
+                RestoreSelectionVisual();
             }
         }
 
@@ -65,6 +73,8 @@ namespace uAudioEditorPro.Controls
         public event Action<TrackRowControl, double, double>? CutRequested;
         public event Action<TrackRowControl, double, double>? TrimRequested;
         public event Action<TrackRowControl, double, double, bool>? SelectionPreviewChanged;
+
+        public bool HasUsableSelection => _hasSelectionVisual && (_selectionEndTime - _selectionStartTime) > DurationEpsilon;
 
         public TrackRowControl()
         {
@@ -96,7 +106,7 @@ namespace uAudioEditorPro.Controls
             }
 
             SampleProvider.UpdateClips(Clips);
-            SampleProvider.Volume = VolumeSlider != null ? (float)VolumeSlider.Value : 1.0f;
+            SampleProvider.Volume = VolumeSlider != null ? (float)VolumeSlider.Value : AppConstants.DefaultVolume;
             SampleProvider.IsMuted = MuteCheckBox != null && MuteCheckBox.IsChecked == true;
         }
 
@@ -105,7 +115,7 @@ namespace uAudioEditorPro.Controls
             return new TrackSnapshot
             {
                 TrackName = TrackName,
-                Volume = VolumeSlider != null ? (float)VolumeSlider.Value : 1.0f,
+                Volume = VolumeSlider != null ? (float)VolumeSlider.Value : AppConstants.DefaultVolume,
                 IsMuted = MuteCheckBox != null && MuteCheckBox.IsChecked == true,
                 Clips = Clips.Select(c => c.Clone()).ToList()
             };
@@ -123,7 +133,7 @@ namespace uAudioEditorPro.Controls
 
             if (VolumeSlider != null)
             {
-                VolumeSlider.Value = snapshot.Volume;
+                VolumeSlider.Value = Math.Clamp(snapshot.Volume, AppConstants.MinVolume, AppConstants.MaxVolume);
             }
 
             if (MuteCheckBox != null)
@@ -137,7 +147,7 @@ namespace uAudioEditorPro.Controls
 
         public float GetVolume()
         {
-            return VolumeSlider != null ? (float)VolumeSlider.Value : 1.0f;
+            return VolumeSlider != null ? (float)VolumeSlider.Value : AppConstants.DefaultVolume;
         }
 
         public bool GetIsMuted()
@@ -149,7 +159,7 @@ namespace uAudioEditorPro.Controls
         {
             if (VolumeSlider != null)
             {
-                VolumeSlider.Value = volume;
+                VolumeSlider.Value = Math.Clamp(volume, AppConstants.MinVolume, AppConstants.MaxVolume);
             }
         }
 
@@ -197,7 +207,7 @@ namespace uAudioEditorPro.Controls
             OpenFileDialog dialog = new OpenFileDialog
             {
                 Title = "Select audio file",
-                Filter = "Audio files|*.wav;*.mp3;*.aiff;*.wma;*.aac;*.m4a;*.flac|All files|*.*"
+                Filter = AudioFormatValidator.OpenFileDialogFilter
             };
 
             if (dialog.ShowDialog() != true)
@@ -205,20 +215,26 @@ namespace uAudioEditorPro.Controls
                 return;
             }
 
-            double duration = AudioAnalyzer.GetFileDuration(dialog.FileName);
-            if (duration <= 0d)
+            AudioFormatValidationResult validation = AudioAnalyzer.ValidateFile(dialog.FileName);
+            if (!validation.IsValid)
             {
-                MessageBox.Show("Не удалось прочитать аудиофайл.", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(
+                    $"Не удалось прочитать аудиофайл.\n\n{validation.Message}",
+                    "Ошибка формата",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
                 return;
             }
 
+            double duration = validation.DurationSeconds;
+
             UndoSnapshotRequested?.Invoke();
 
-            double startTime = Clips.Count == 0 ? 0d : Clips.Max(c => c.EndTime) + 0.5d;
+            double startTime = Clips.Count == 0 ? 0d : Clips.Max(c => c.EndTime) + ClipGapSeconds;
 
             AudioClipModel clip = new AudioClipModel
             {
-                FilePath = dialog.FileName,
+                FilePath = validation.FilePath,
                 StartTime = startTime,
                 OffsetInFile = 0d,
                 Duration = duration
@@ -276,7 +292,7 @@ namespace uAudioEditorPro.Controls
 
                 Grid contentGrid = new Grid();
 
-                int peakCount = Math.Min(Math.Max((int)(width / 2d), 32), 4000);
+                int peakCount = Math.Min(Math.Max((int)(width / 2d), AppConstants.MinWaveformPeakCount), AppConstants.MaxWaveformPeakCount);
                 float[] peaks = AudioAnalyzer.GetPeaks(clip.FilePath, peakCount, clip.OffsetInFile, clip.Duration);
                 Polygon waveform = CreateWaveformPolygon(peaks, width, ClipHeight);
                 contentGrid.Children.Add(waveform);
@@ -462,7 +478,7 @@ namespace uAudioEditorPro.Controls
 
             MenuItem cutItem = new MenuItem
             {
-                Header = "Cut Inside"
+                Header = "Cut Inside\tCtrl+X"
             };
             cutItem.Click += (s, args) =>
             {
@@ -472,7 +488,7 @@ namespace uAudioEditorPro.Controls
 
             MenuItem trimItem = new MenuItem
             {
-                Header = "Trim Outside"
+                Header = "Trim Outside\tCtrl+Shift+X"
             };
             trimItem.Click += (s, args) =>
             {
@@ -529,6 +545,28 @@ namespace uAudioEditorPro.Controls
             {
                 ExecuteTrim(start, end);
             }
+        }
+
+        public bool TryExecuteCutFromSelection()
+        {
+            if (!HasUsableSelection)
+            {
+                return false;
+            }
+
+            ExecuteCutFromSelection();
+            return true;
+        }
+
+        public bool TryExecuteTrimFromSelection()
+        {
+            if (!HasUsableSelection)
+            {
+                return false;
+            }
+
+            ExecuteTrimFromSelection();
+            return true;
         }
 
         public void ShowSelectionRange(double startTime, double endTime)

@@ -1,13 +1,15 @@
 using System;
 using System.Collections.Generic;
 
-namespace uAudioEditorPro.Models
+using uAudio;
+
+namespace uAudio.Models
 {
     public sealed class ProjectFileModel
     {
-        public int FormatVersion { get; set; } = 1;
-        public string AppName { get; set; } = "uAudio Editor Pro";
-        public double PixelsPerSecond { get; set; } = 100d;
+        public int FormatVersion { get; set; } = AppConstants.ProjectFormatVersion;
+        public string AppName { get; set; } = AppConstants.AppName;
+        public double PixelsPerSecond { get; set; } = AppConstants.DefaultPixelsPerSecond;
         public bool EditAllTracks { get; set; }
         public double CurrentTime { get; set; }
         public List<ProjectTrackFileModel> Tracks { get; set; } = new List<ProjectTrackFileModel>();
@@ -17,7 +19,7 @@ namespace uAudioEditorPro.Models
     public sealed class ProjectTrackFileModel
     {
         public string TrackName { get; set; } = string.Empty;
-        public float Volume { get; set; } = 1.0f;
+        public float Volume { get; set; } = AppConstants.DefaultVolume;
         public bool IsMuted { get; set; }
         public List<ProjectClipFileModel> Clips { get; set; } = new List<ProjectClipFileModel>();
     }

@@ -3,9 +3,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
-using uAudioEditorPro.Models;
+using uAudio;
+using uAudio.Models;
 
-namespace uAudioEditorPro.Services
+namespace uAudio.Services
 {
     public sealed class ProjectLoadResult
     {
@@ -90,7 +91,7 @@ namespace uAudioEditorPro.Services
                 Tracks = (persistedProject.Tracks ?? new List<ProjectTrackFileModel>()).Select(track => new ProjectTrackFileModel
                 {
                     TrackName = track.TrackName,
-                    Volume = track.Volume,
+                    Volume = Math.Clamp(track.Volume, AppConstants.MinVolume, AppConstants.MaxVolume),
                     IsMuted = track.IsMuted,
                     Clips = (track.Clips ?? new List<ProjectClipFileModel>()).Select(clip =>
                     {
@@ -142,7 +143,7 @@ namespace uAudioEditorPro.Services
                 Tracks = (project.Tracks ?? new List<ProjectTrackFileModel>()).Select(track => new ProjectTrackFileModel
                 {
                     TrackName = track.TrackName ?? string.Empty,
-                    Volume = track.Volume,
+                    Volume = Math.Clamp(track.Volume, AppConstants.MinVolume, AppConstants.MaxVolume),
                     IsMuted = track.IsMuted,
                     Clips = (track.Clips ?? new List<ProjectClipFileModel>()).Select(clip => new ProjectClipFileModel
                     {
@@ -163,16 +164,16 @@ namespace uAudioEditorPro.Services
         {
             return new ProjectFileModel
             {
-                FormatVersion = Math.Max(project.FormatVersion, 1),
-                AppName = string.IsNullOrWhiteSpace(project.AppName) ? "uAudio Editor Pro" : project.AppName,
-                PixelsPerSecond = project.PixelsPerSecond,
+                FormatVersion = Math.Max(project.FormatVersion, AppConstants.ProjectFormatVersion),
+                AppName = string.IsNullOrWhiteSpace(project.AppName) ? AppConstants.AppName : project.AppName,
+                PixelsPerSecond = Math.Clamp(project.PixelsPerSecond, AppConstants.MinPixelsPerSecond, AppConstants.MaxPixelsPerSecond),
                 EditAllTracks = project.EditAllTracks,
                 CurrentTime = Math.Max(0d, project.CurrentTime),
                 SavedUtc = project.SavedUtc,
                 Tracks = (project.Tracks ?? new List<ProjectTrackFileModel>()).Select(track => new ProjectTrackFileModel
                 {
                     TrackName = track.TrackName ?? string.Empty,
-                    Volume = track.Volume,
+                    Volume = Math.Clamp(track.Volume, AppConstants.MinVolume, AppConstants.MaxVolume),
                     IsMuted = track.IsMuted,
                     Clips = (track.Clips ?? new List<ProjectClipFileModel>()).Select(clip =>
                     {
@@ -252,8 +253,9 @@ namespace uAudioEditorPro.Services
             {
                 return Path.GetFullPath(path);
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warning($"Could not normalize project path: {path}", ex);
                 return path.Trim();
             }
         }

@@ -1,6 +1,6 @@
-﻿using System.Windows;
+using System.Windows;
 
-namespace uAudioEditorPro
+namespace uAudio
 {
     public partial class App : Application
     {

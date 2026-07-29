@@ -4,19 +4,25 @@ using System.IO;
 using System.Linq;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
-using uAudioEditorPro.Models;
+using uAudio;
+using uAudio.Models;
 
-namespace uAudioEditorPro.Services
+namespace uAudio.Services
 {
     public sealed class AudioExportResult
     {
         public double DurationSeconds { get; init; }
         public IReadOnlyList<string> MissingFiles { get; init; } = Array.Empty<string>();
+        public IReadOnlyList<string> InvalidFiles { get; init; } = Array.Empty<string>();
     }
 
     public static class AudioExportService
     {
-        public static AudioExportResult ExportWave(ProjectFileModel project, string outputFilePath, int sampleRate = 44100, int channels = 2)
+        public static AudioExportResult ExportWave(
+            ProjectFileModel project,
+            string outputFilePath,
+            int sampleRate = AppConstants.DefaultSampleRate,
+            int channels = AppConstants.DefaultChannelCount)
         {
             if (project == null)
             {
@@ -27,6 +33,9 @@ namespace uAudioEditorPro.Services
             {
                 throw new ArgumentException("Output path is required.", nameof(outputFilePath));
             }
+
+            sampleRate = Math.Max(1, sampleRate);
+            channels = Math.Max(1, channels);
 
             List<ProjectTrackFileModel> tracks = project.Tracks ?? new List<ProjectTrackFileModel>();
             double durationSeconds = GetProjectDuration(project);
@@ -51,6 +60,22 @@ namespace uAudioEditorPro.Services
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+            List<string> invalidFiles = tracks
+                .SelectMany(track => track.Clips ?? new List<ProjectClipFileModel>())
+                .Select(clip => clip.FilePath ?? string.Empty)
+                .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                .Select(path => AudioFormatValidator.ValidateReadable(path))
+                .Where(result => !result.IsValid)
+                .Select(result => $"{result.FilePath}: {result.Message}")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (invalidFiles.Count > 0)
+            {
+                AppLogger.Warning("Export contains invalid source files: " + string.Join("; ", invalidFiles));
+            }
 
             List<TrackSampleProvider> providers = new List<TrackSampleProvider>();
 
@@ -101,14 +126,14 @@ namespace uAudioEditorPro.Services
 
                     if (bytesToRead <= 0)
                     {
-                        bytesToRead = outputFormat.BlockAlign;
+                        break;
                     }
 
                     int bytesRead = waveProvider.Read(buffer, 0, bytesToRead);
                     if (bytesRead <= 0)
                     {
-                        Array.Clear(buffer, 0, bytesToRead);
-                        bytesRead = bytesToRead;
+                        AppLogger.Warning($"Export stopped early: source returned 0 bytes after {totalBytesWritten} of {totalBytesToWrite} bytes.");
+                        break;
                     }
 
                     writer.Write(buffer, 0, bytesRead);
@@ -120,8 +145,29 @@ namespace uAudioEditorPro.Services
                 return new AudioExportResult
                 {
                     DurationSeconds = durationSeconds,
-                    MissingFiles = missingFiles
+                    MissingFiles = missingFiles,
+                    InvalidFiles = invalidFiles
                 };
+            }
+            catch (IOException ex)
+            {
+                AppLogger.Error($"I/O error during export to {fullOutputPath}", ex);
+                throw;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                AppLogger.Error($"No permission to export to {fullOutputPath}", ex);
+                throw;
+            }
+            catch (InvalidOperationException ex)
+            {
+                AppLogger.Error($"Invalid export operation for {fullOutputPath}", ex);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error($"Unexpected export error for {fullOutputPath}", ex);
+                throw;
             }
             finally
             {

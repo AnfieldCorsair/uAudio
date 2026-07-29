@@ -1,18 +1,20 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
-using uAudioEditorPro.Models;
+using uAudio;
+using uAudio.Models;
 
-namespace uAudioEditorPro.Services
+namespace uAudio.Services
 {
     public sealed class TrackSampleProvider : ISampleProvider, IDisposable
     {
-        private const double TimeEpsilon = 1e-7;
+        private const double SeekToleranceSamples = 2d;
 
-        private readonly object _syncRoot = new object();
+        private readonly object _stateSync = new object();
+        private readonly object _contextSync = new object();
         private readonly int _sampleRate;
         private readonly int _channels;
         private readonly WaveFormat _waveFormat;
@@ -23,16 +25,21 @@ namespace uAudioEditorPro.Services
         private float _volume;
         private bool _isMuted;
         private bool _disposed;
+        private long _stateVersion;
 
         private Guid _continuationClipId;
         private string? _continuationFilePath;
         private double _expectedFileTime;
         private bool _hasContinuation;
 
+        private double TimeEpsilonSeconds => Math.Max(AppConstants.TimeComparisonEpsilonSeconds, 1d / Math.Max(_sampleRate, 1));
+
         private sealed class FilePlaybackContext : IDisposable
         {
+            private readonly object _syncRoot = new object();
             private readonly int _targetSampleRate;
             private readonly int _targetChannels;
+            private bool _disposed;
 
             public AudioFileReader Reader { get; }
             public ISampleProvider Provider { get; private set; }
@@ -45,7 +52,25 @@ namespace uAudioEditorPro.Services
                 Provider = BuildProvider();
             }
 
-            public void Seek(double seconds)
+            public int ReadFrom(double seconds, bool seekBeforeRead, float[] buffer, int offset, int count)
+            {
+                lock (_syncRoot)
+                {
+                    if (_disposed)
+                    {
+                        return 0;
+                    }
+
+                    if (seekBeforeRead)
+                    {
+                        SeekCore(seconds);
+                    }
+
+                    return Provider.Read(buffer, offset, count);
+                }
+            }
+
+            private void SeekCore(double seconds)
             {
                 double clampedSeconds = Math.Max(0d, Math.Min(seconds, Reader.TotalTime.TotalSeconds));
                 Reader.CurrentTime = TimeSpan.FromSeconds(clampedSeconds);
@@ -71,18 +96,27 @@ namespace uAudioEditorPro.Services
 
             public void Dispose()
             {
-                Reader.Dispose();
+                lock (_syncRoot)
+                {
+                    if (_disposed)
+                    {
+                        return;
+                    }
+
+                    Reader.Dispose();
+                    _disposed = true;
+                }
             }
         }
 
-        public TrackSampleProvider(int sampleRate = 44100, int channels = 2)
+        public TrackSampleProvider(int sampleRate = AppConstants.DefaultSampleRate, int channels = AppConstants.DefaultChannelCount)
         {
-            _sampleRate = sampleRate;
-            _channels = channels;
+            _sampleRate = Math.Max(1, sampleRate);
+            _channels = Math.Max(1, channels);
             _waveFormat = WaveFormat.CreateIeeeFloatWaveFormat(_sampleRate, _channels);
             _fileContexts = new Dictionary<string, FilePlaybackContext>(StringComparer.OrdinalIgnoreCase);
             _clips = new List<AudioClipModel>();
-            _volume = 1.0f;
+            _volume = AppConstants.DefaultVolume;
             _continuationClipId = Guid.Empty;
         }
 
@@ -92,7 +126,7 @@ namespace uAudioEditorPro.Services
         {
             get
             {
-                lock (_syncRoot)
+                lock (_stateSync)
                 {
                     return _currentGlobalTime;
                 }
@@ -103,16 +137,16 @@ namespace uAudioEditorPro.Services
         {
             get
             {
-                lock (_syncRoot)
+                lock (_stateSync)
                 {
                     return _volume;
                 }
             }
             set
             {
-                lock (_syncRoot)
+                lock (_stateSync)
                 {
-                    _volume = Math.Clamp(value, 0f, 2f);
+                    _volume = Math.Clamp(value, AppConstants.MinVolume, AppConstants.MaxVolume);
                 }
             }
         }
@@ -121,14 +155,14 @@ namespace uAudioEditorPro.Services
         {
             get
             {
-                lock (_syncRoot)
+                lock (_stateSync)
                 {
                     return _isMuted;
                 }
             }
             set
             {
-                lock (_syncRoot)
+                lock (_stateSync)
                 {
                     _isMuted = value;
                 }
@@ -137,32 +171,33 @@ namespace uAudioEditorPro.Services
 
         public void UpdateClips(List<AudioClipModel> clips)
         {
-            lock (_syncRoot)
+            List<AudioClipModel> clonedClips = (clips ?? new List<AudioClipModel>())
+                .Select(c => c.Clone())
+                .OrderBy(c => c.StartTime)
+                .ThenBy(c => c.Id)
+                .ToList();
+
+            lock (_stateSync)
             {
                 ThrowIfDisposed();
 
-                _clips = (clips ?? new List<AudioClipModel>())
-                    .Select(c => c.Clone())
-                    .OrderBy(c => c.StartTime)
-                    .ThenBy(c => c.Id)
-                    .ToList();
-
-                _hasContinuation = false;
-                CleanupUnusedContexts();
+                _clips = clonedClips;
+                ResetContinuationLocked();
+                _stateVersion++;
             }
+
+            CleanupUnusedContexts(clonedClips);
         }
 
         public void Seek(double globalTime)
         {
-            lock (_syncRoot)
+            lock (_stateSync)
             {
                 ThrowIfDisposed();
 
                 _currentGlobalTime = Math.Max(0d, globalTime);
-                _hasContinuation = false;
-                _continuationClipId = Guid.Empty;
-                _continuationFilePath = null;
-                _expectedFileTime = 0d;
+                ResetContinuationLocked();
+                _stateVersion++;
             }
         }
 
@@ -178,121 +213,155 @@ namespace uAudioEditorPro.Services
                 throw new ArgumentOutOfRangeException(nameof(count));
             }
 
-            lock (_syncRoot)
+            Array.Clear(buffer, offset, count);
+
+            List<AudioClipModel> clips;
+            double currentTime;
+            float volume;
+            bool isMuted;
+            Guid continuationClipId;
+            string? continuationFilePath;
+            double expectedFileTime;
+            bool hasContinuation;
+            long version;
+
+            lock (_stateSync)
             {
                 ThrowIfDisposed();
 
-                Array.Clear(buffer, offset, count);
+                clips = _clips;
+                currentTime = _currentGlobalTime;
+                volume = _volume;
+                isMuted = _isMuted;
+                continuationClipId = _continuationClipId;
+                continuationFilePath = _continuationFilePath;
+                expectedFileTime = _expectedFileTime;
+                hasContinuation = _hasContinuation;
+                version = _stateVersion;
+            }
 
-                int samplesWritten = 0;
+            int samplesWritten = 0;
+            double epsilon = TimeEpsilonSeconds;
 
-                while (samplesWritten < count)
+            while (samplesWritten < count)
+            {
+                AudioClipModel? activeClip = FindClipAtTime(clips, currentTime, epsilon);
+
+                if (activeClip == null)
                 {
-                    AudioClipModel? activeClip = FindClipAtTime(_currentGlobalTime);
+                    int silenceSamples = CalculateSilenceSamples(clips, count - samplesWritten, currentTime, epsilon);
+                    samplesWritten += silenceSamples;
+                    currentTime += SamplesToSeconds(silenceSamples);
+                    hasContinuation = false;
+                    continue;
+                }
 
-                    if (activeClip == null)
-                    {
-                        int silenceSamples = CalculateSilenceSamples(count - samplesWritten, _currentGlobalTime);
-                        samplesWritten += silenceSamples;
-                        _currentGlobalTime += SamplesToSeconds(silenceSamples);
-                        _hasContinuation = false;
-                        continue;
-                    }
+                double localTime = Math.Max(0d, currentTime - activeClip.StartTime);
+                double remainingClipTime = activeClip.Duration - localTime;
 
-                    double localTime = Math.Max(0d, _currentGlobalTime - activeClip.StartTime);
-                    double remainingClipTime = activeClip.Duration - localTime;
+                if (remainingClipTime <= epsilon)
+                {
+                    currentTime = activeClip.EndTime;
+                    hasContinuation = false;
+                    continue;
+                }
 
-                    if (remainingClipTime <= TimeEpsilon)
-                    {
-                        _currentGlobalTime = activeClip.EndTime;
-                        _hasContinuation = false;
-                        continue;
-                    }
+                int clipSamplesRemaining = SecondsToSamples(remainingClipTime);
+                if (clipSamplesRemaining <= 0)
+                {
+                    clipSamplesRemaining = Math.Min(count - samplesWritten, _channels);
+                }
 
-                    int clipSamplesRemaining = SecondsToSamples(remainingClipTime);
-                    if (clipSamplesRemaining <= 0)
-                    {
-                        clipSamplesRemaining = Math.Min(count - samplesWritten, _channels);
-                    }
+                int blockSamples = Math.Min(count - samplesWritten, clipSamplesRemaining);
+                double blockDuration = SamplesToSeconds(blockSamples);
 
-                    int blockSamples = Math.Min(count - samplesWritten, clipSamplesRemaining);
-                    double blockDuration = SamplesToSeconds(blockSamples);
-
-                    if (_isMuted || _volume <= 0f)
-                    {
-                        samplesWritten += blockSamples;
-                        _currentGlobalTime += blockDuration;
-                        _hasContinuation = false;
-                        continue;
-                    }
-
-                    FilePlaybackContext? context = GetOrCreateContext(activeClip.FilePath);
-                    if (context == null)
-                    {
-                        samplesWritten += blockSamples;
-                        _currentGlobalTime += blockDuration;
-                        _hasContinuation = false;
-                        continue;
-                    }
-
-                    double targetFileTime = Math.Max(0d, activeClip.OffsetInFile + localTime);
-                    EnsureContextPosition(context, activeClip, targetFileTime);
-
-                    int actualRead = context.Provider.Read(buffer, offset + samplesWritten, blockSamples);
-
-                    if (actualRead < blockSamples)
-                    {
-                        Array.Clear(buffer, offset + samplesWritten + actualRead, blockSamples - actualRead);
-                    }
-
-                    if (actualRead > 0 && Math.Abs(_volume - 1f) > 0.0001f)
-                    {
-                        for (int i = 0; i < actualRead; i++)
-                        {
-                            buffer[offset + samplesWritten + i] *= _volume;
-                        }
-                    }
-
+                if (isMuted || volume <= AppConstants.MinVolume)
+                {
                     samplesWritten += blockSamples;
-                    _currentGlobalTime += blockDuration;
+                    currentTime += blockDuration;
+                    hasContinuation = false;
+                    continue;
+                }
 
-                    if (actualRead == blockSamples)
+                FilePlaybackContext? context = GetOrCreateContext(activeClip.FilePath);
+                if (context == null)
+                {
+                    samplesWritten += blockSamples;
+                    currentTime += blockDuration;
+                    hasContinuation = false;
+                    continue;
+                }
+
+                double targetFileTime = Math.Max(0d, activeClip.OffsetInFile + localTime);
+                bool seekBeforeRead = ShouldSeekContext(activeClip, targetFileTime, hasContinuation, continuationClipId, continuationFilePath, expectedFileTime);
+                int actualRead = context.ReadFrom(targetFileTime, seekBeforeRead, buffer, offset + samplesWritten, blockSamples);
+
+                if (actualRead < blockSamples)
+                {
+                    Array.Clear(buffer, offset + samplesWritten + Math.Max(actualRead, 0), blockSamples - Math.Max(actualRead, 0));
+                }
+
+                if (actualRead > 0 && Math.Abs(volume - AppConstants.DefaultVolume) > 0.0001f)
+                {
+                    for (int i = 0; i < actualRead; i++)
                     {
-                        _continuationClipId = activeClip.Id;
-                        _continuationFilePath = activeClip.FilePath;
-                        _expectedFileTime = targetFileTime + blockDuration;
-                        _hasContinuation = true;
-                    }
-                    else
-                    {
-                        _hasContinuation = false;
+                        buffer[offset + samplesWritten + i] *= volume;
                     }
                 }
 
-                return count;
+                samplesWritten += blockSamples;
+                currentTime += blockDuration;
+
+                if (actualRead == blockSamples)
+                {
+                    continuationClipId = activeClip.Id;
+                    continuationFilePath = activeClip.FilePath;
+                    expectedFileTime = targetFileTime + blockDuration;
+                    hasContinuation = true;
+                }
+                else
+                {
+                    hasContinuation = false;
+                }
             }
+
+            lock (_stateSync)
+            {
+                if (!_disposed && _stateVersion == version)
+                {
+                    _currentGlobalTime = currentTime;
+                    _continuationClipId = continuationClipId;
+                    _continuationFilePath = continuationFilePath;
+                    _expectedFileTime = expectedFileTime;
+                    _hasContinuation = hasContinuation;
+                }
+            }
+
+            return count;
         }
 
-        private void EnsureContextPosition(FilePlaybackContext context, AudioClipModel clip, double targetFileTime)
+        private bool ShouldSeekContext(
+            AudioClipModel clip,
+            double targetFileTime,
+            bool hasContinuation,
+            Guid continuationClipId,
+            string? continuationFilePath,
+            double expectedFileTime)
         {
-            bool needReset =
-                !_hasContinuation ||
-                _continuationClipId != clip.Id ||
-                !string.Equals(_continuationFilePath, clip.FilePath, StringComparison.OrdinalIgnoreCase) ||
-                Math.Abs(_expectedFileTime - targetFileTime) > (1.5d / _sampleRate);
+            double toleranceSeconds = SeekToleranceSamples / _sampleRate;
 
-            if (needReset)
-            {
-                context.Seek(targetFileTime);
-            }
+            return !hasContinuation ||
+                continuationClipId != clip.Id ||
+                !string.Equals(continuationFilePath, clip.FilePath, StringComparison.OrdinalIgnoreCase) ||
+                Math.Abs(expectedFileTime - targetFileTime) > toleranceSeconds;
         }
 
-        private AudioClipModel? FindClipAtTime(double globalTime)
+        private static AudioClipModel? FindClipAtTime(List<AudioClipModel> clips, double globalTime, double epsilon)
         {
-            for (int i = 0; i < _clips.Count; i++)
+            for (int i = 0; i < clips.Count; i++)
             {
-                AudioClipModel clip = _clips[i];
-                if (globalTime + TimeEpsilon >= clip.StartTime && globalTime < clip.EndTime - TimeEpsilon)
+                AudioClipModel clip = clips[i];
+                if (globalTime + epsilon >= clip.StartTime && globalTime < clip.EndTime - epsilon)
                 {
                     return clip;
                 }
@@ -301,12 +370,12 @@ namespace uAudioEditorPro.Services
             return null;
         }
 
-        private AudioClipModel? FindNextClipAfter(double globalTime)
+        private static AudioClipModel? FindNextClipAfter(List<AudioClipModel> clips, double globalTime, double epsilon)
         {
-            for (int i = 0; i < _clips.Count; i++)
+            for (int i = 0; i < clips.Count; i++)
             {
-                AudioClipModel clip = _clips[i];
-                if (clip.StartTime > globalTime + TimeEpsilon)
+                AudioClipModel clip = clips[i];
+                if (clip.StartTime > globalTime + epsilon)
                 {
                     return clip;
                 }
@@ -315,16 +384,16 @@ namespace uAudioEditorPro.Services
             return null;
         }
 
-        private int CalculateSilenceSamples(int maxSamples, double currentTime)
+        private int CalculateSilenceSamples(List<AudioClipModel> clips, int maxSamples, double currentTime, double epsilon)
         {
-            AudioClipModel? nextClip = FindNextClipAfter(currentTime);
+            AudioClipModel? nextClip = FindNextClipAfter(clips, currentTime, epsilon);
             if (nextClip == null)
             {
                 return maxSamples;
             }
 
             double silenceDuration = nextClip.StartTime - currentTime;
-            if (silenceDuration <= TimeEpsilon)
+            if (silenceDuration <= epsilon)
             {
                 return Math.Min(maxSamples, Math.Max(_channels, 1));
             }
@@ -345,7 +414,7 @@ namespace uAudioEditorPro.Services
                 return 0;
             }
 
-            long frames = (long)Math.Ceiling((seconds * _sampleRate) - TimeEpsilon);
+            long frames = (long)Math.Ceiling((seconds * _sampleRate) - TimeEpsilonSeconds);
             if (frames < 1)
             {
                 frames = 1;
@@ -372,40 +441,99 @@ namespace uAudioEditorPro.Services
 
         private FilePlaybackContext? GetOrCreateContext(string filePath)
         {
-            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            string contextKey = NormalizeContextKey(filePath);
+            if (string.IsNullOrWhiteSpace(contextKey) || !File.Exists(contextKey))
             {
                 return null;
             }
 
-            if (_fileContexts.TryGetValue(filePath, out FilePlaybackContext? existing))
+            lock (_contextSync)
             {
-                return existing;
+                if (_fileContexts.TryGetValue(contextKey, out FilePlaybackContext? existing))
+                {
+                    return existing;
+                }
+            }
+
+            AudioFormatValidationResult validation = AudioFormatValidator.ValidateReadable(contextKey);
+            if (!validation.IsValid)
+            {
+                AppLogger.Warning($"Playback skipped invalid file: {filePath}. {validation.Message}");
+                return null;
+            }
+
+            lock (_contextSync)
+            {
+                if (_fileContexts.TryGetValue(validation.FilePath, out FilePlaybackContext? existing))
+                {
+                    return existing;
+                }
+
+                try
+                {
+                    FilePlaybackContext context = new FilePlaybackContext(validation.FilePath, _sampleRate, _channels);
+                    _fileContexts[validation.FilePath] = context;
+                    return context;
+                }
+                catch (IOException ex)
+                {
+                    AppLogger.Warning($"I/O error while opening playback file: {validation.FilePath}", ex);
+                    return null;
+                }
+                catch (InvalidOperationException ex)
+                {
+                    AppLogger.Warning($"Invalid playback format: {validation.FilePath}", ex);
+                    return null;
+                }
+                catch (NotSupportedException ex)
+                {
+                    AppLogger.Warning($"Unsupported playback format: {validation.FilePath}", ex);
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Error($"Unexpected playback open error: {validation.FilePath}", ex);
+                    return null;
+                }
+            }
+        }
+
+        private void CleanupUnusedContexts(List<AudioClipModel> clips)
+        {
+            HashSet<string> usedFiles = new HashSet<string>(
+                clips.Select(c => NormalizeContextKey(c.FilePath)).Where(path => !string.IsNullOrWhiteSpace(path)),
+                StringComparer.OrdinalIgnoreCase);
+
+            lock (_contextSync)
+            {
+                List<string> keysToRemove = _fileContexts.Keys.Where(k => !usedFiles.Contains(k)).ToList();
+
+                foreach (string key in keysToRemove)
+                {
+                    if (_fileContexts.TryGetValue(key, out FilePlaybackContext? context))
+                    {
+                        _fileContexts.Remove(key);
+                        context.Dispose();
+                    }
+                }
+            }
+        }
+
+        private static string NormalizeContextKey(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                return string.Empty;
             }
 
             try
             {
-                FilePlaybackContext context = new FilePlaybackContext(filePath, _sampleRate, _channels);
-                _fileContexts[filePath] = context;
-                return context;
+                return Path.GetFullPath(filePath);
             }
-            catch
+            catch (Exception ex)
             {
-                return null;
-            }
-        }
-
-        private void CleanupUnusedContexts()
-        {
-            HashSet<string> usedFiles = new HashSet<string>(_clips.Select(c => c.FilePath), StringComparer.OrdinalIgnoreCase);
-            List<string> keysToRemove = _fileContexts.Keys.Where(k => !usedFiles.Contains(k)).ToList();
-
-            foreach (string key in keysToRemove)
-            {
-                if (_fileContexts.TryGetValue(key, out FilePlaybackContext? context))
-                {
-                    context.Dispose();
-                    _fileContexts.Remove(key);
-                }
+                AppLogger.Warning($"Could not normalize playback context path: {filePath}", ex);
+                return filePath.Trim();
             }
         }
 
@@ -438,6 +566,14 @@ namespace uAudioEditorPro.Services
             return mux;
         }
 
+        private void ResetContinuationLocked()
+        {
+            _hasContinuation = false;
+            _continuationClipId = Guid.Empty;
+            _continuationFilePath = null;
+            _expectedFileTime = 0d;
+        }
+
         private void ThrowIfDisposed()
         {
             if (_disposed)
@@ -448,20 +584,28 @@ namespace uAudioEditorPro.Services
 
         public void Dispose()
         {
-            lock (_syncRoot)
+            List<FilePlaybackContext> contexts;
+
+            lock (_stateSync)
             {
                 if (_disposed)
                 {
                     return;
                 }
 
-                foreach (FilePlaybackContext context in _fileContexts.Values)
-                {
-                    context.Dispose();
-                }
-
-                _fileContexts.Clear();
                 _disposed = true;
+                _stateVersion++;
+            }
+
+            lock (_contextSync)
+            {
+                contexts = _fileContexts.Values.ToList();
+                _fileContexts.Clear();
+            }
+
+            foreach (FilePlaybackContext context in contexts)
+            {
+                context.Dispose();
             }
         }
     }
@@ -478,10 +622,10 @@ namespace uAudioEditorPro.Services
         private double _globalTime;
         private bool _disposed;
 
-        public AudioPlaybackEngine(int sampleRate = 44100, int channels = 2)
+        public AudioPlaybackEngine(int sampleRate = AppConstants.DefaultSampleRate, int channels = AppConstants.DefaultChannelCount)
         {
-            _sampleRate = sampleRate;
-            _channels = channels;
+            _sampleRate = Math.Max(1, sampleRate);
+            _channels = Math.Max(1, channels);
             _trackProviders = new List<TrackSampleProvider>();
         }
 
@@ -702,16 +846,18 @@ namespace uAudioEditorPro.Services
             {
                 _waveOut.Stop();
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warning("WaveOut stop failed during dispose.", ex);
             }
 
             try
             {
                 _waveOut.Dispose();
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warning("WaveOut dispose failed.", ex);
             }
 
             _waveOut = null;

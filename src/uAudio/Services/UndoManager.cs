@@ -1,13 +1,14 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
-using uAudioEditorPro.Models;
+using uAudio;
+using uAudio.Models;
 
-namespace uAudioEditorPro.Services
+namespace uAudio.Services
 {
     public sealed class TrackSnapshot
     {
         public string TrackName { get; set; } = string.Empty;
-        public float Volume { get; set; } = 1.0f;
+        public float Volume { get; set; } = AppConstants.DefaultVolume;
         public bool IsMuted { get; set; }
         public List<AudioClipModel> Clips { get; set; } = new List<AudioClipModel>();
 
@@ -38,8 +39,8 @@ namespace uAudioEditorPro.Services
 
     public static class UndoManager
     {
-        private static readonly Stack<ProjectSnapshot> _undoStack = new Stack<ProjectSnapshot>();
-        private const int MaxUndoLevels = 50;
+        private static readonly object SyncRoot = new object();
+        private static readonly Stack<ProjectSnapshot> UndoStack = new Stack<ProjectSnapshot>();
 
         public static void SaveSnapshot(ProjectSnapshot snapshot)
         {
@@ -48,37 +49,71 @@ namespace uAudioEditorPro.Services
                 return;
             }
 
-            if (_undoStack.Count >= MaxUndoLevels)
+            ProjectSnapshot clonedSnapshot = snapshot.Clone();
+
+            lock (SyncRoot)
             {
-                List<ProjectSnapshot> retained = _undoStack.Reverse().Skip(1).Select(s => s.Clone()).ToList();
-                _undoStack.Clear();
-
-                foreach (ProjectSnapshot item in retained)
+                if (UndoStack.Count >= AppConstants.MaxUndoLevels)
                 {
-                    _undoStack.Push(item);
-                }
-            }
+                    List<ProjectSnapshot> retained = UndoStack
+                        .Reverse()
+                        .Skip(1)
+                        .Select(s => s.Clone())
+                        .ToList();
 
-            _undoStack.Push(snapshot.Clone());
+                    UndoStack.Clear();
+
+                    foreach (ProjectSnapshot item in retained)
+                    {
+                        UndoStack.Push(item);
+                    }
+                }
+
+                UndoStack.Push(clonedSnapshot);
+            }
         }
 
         public static ProjectSnapshot? PopSnapshot()
         {
-            if (_undoStack.Count == 0)
+            lock (SyncRoot)
             {
-                return null;
-            }
+                if (UndoStack.Count == 0)
+                {
+                    return null;
+                }
 
-            return _undoStack.Pop().Clone();
+                return UndoStack.Pop().Clone();
+            }
         }
 
-        public static bool CanUndo => _undoStack.Count > 0;
+        public static bool CanUndo
+        {
+            get
+            {
+                lock (SyncRoot)
+                {
+                    return UndoStack.Count > 0;
+                }
+            }
+        }
 
-        public static int Count => _undoStack.Count;
+        public static int Count
+        {
+            get
+            {
+                lock (SyncRoot)
+                {
+                    return UndoStack.Count;
+                }
+            }
+        }
 
         public static void Clear()
         {
-            _undoStack.Clear();
+            lock (SyncRoot)
+            {
+                UndoStack.Clear();
+            }
         }
     }
 }

@@ -3,9 +3,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
-using uAudioEditorPro.Models;
+using uAudio;
+using uAudio.Models;
 
-namespace uAudioEditorPro.Services
+namespace uAudio.Services
 {
     public sealed class RecoveryLoadResult
     {
@@ -22,7 +23,7 @@ namespace uAudioEditorPro.Services
         };
 
         private static string RecoveryDirectoryPath =>
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "uAudioEditorPro", "Recovery");
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppConstants.AppName, "Recovery");
 
         private static string RecoveryFilePath =>
             Path.Combine(RecoveryDirectoryPath, "last-recovery.uaudiorecovery");
@@ -38,8 +39,8 @@ namespace uAudioEditorPro.Services
 
             RecoveryFileModel persistedRecovery = new RecoveryFileModel
             {
-                FormatVersion = Math.Max(recovery.FormatVersion, 1),
-                AppName = string.IsNullOrWhiteSpace(recovery.AppName) ? "uAudio Editor Pro" : recovery.AppName,
+                FormatVersion = Math.Max(recovery.FormatVersion, AppConstants.ProjectFormatVersion),
+                AppName = string.IsNullOrWhiteSpace(recovery.AppName) ? AppConstants.AppName : recovery.AppName,
                 SavedUtc = DateTime.UtcNow,
                 SourceProjectPath = recovery.SourceProjectPath ?? string.Empty,
                 SourceProjectName = recovery.SourceProjectName ?? string.Empty,
@@ -64,8 +65,9 @@ namespace uAudioEditorPro.Services
 
                 return Load();
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warning("Recovery load failed. The recovery file will be cleared.", ex);
                 Clear();
                 return null;
             }
@@ -110,8 +112,9 @@ namespace uAudioEditorPro.Services
                     File.Delete(RecoveryFilePath);
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warning("Failed to clear recovery file.", ex);
             }
         }
 
@@ -126,8 +129,9 @@ namespace uAudioEditorPro.Services
             {
                 return Path.GetFullPath(path);
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warning($"Could not normalize recovery path: {path}", ex);
                 return path.Trim();
             }
         }

@@ -1,6 +1,6 @@
-﻿using System;
+using System;
 
-namespace uAudioEditorPro.Models
+namespace uAudio.Models
 {
     public sealed class AudioClipModel
     {

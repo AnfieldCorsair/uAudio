@@ -1,8 +1,8 @@
-<Window x:Class="uAudioEditorPro.MainWindow"
+<Window x:Class="uAudio.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:local="clr-namespace:uAudioEditorPro"
-        Title="uAudio Editor Pro"
+        xmlns:local="clr-namespace:uAudio"
+        Title="uAudio"
         Width="1280"
         Height="720"
         Background="#1E1E1E"
@@ -15,6 +15,18 @@
         <KeyBinding Key="S" Modifiers="Control+Shift" Command="{x:Static ApplicationCommands.SaveAs}"/>
         <KeyBinding Key="Z" Modifiers="Control" Command="{x:Static ApplicationCommands.Undo}"/>
         <KeyBinding Key="E" Modifiers="Control" Command="{x:Static local:MainWindow.ExportMixCommand}"/>
+        <KeyBinding Key="T" Modifiers="Control" Command="{x:Static local:MainWindow.AddTrackCommand}"/>
+        <KeyBinding Key="Space" Command="{x:Static local:MainWindow.PlayPauseCommand}"/>
+        <KeyBinding Key="Escape" Command="{x:Static local:MainWindow.StopPlaybackCommand}"/>
+        <KeyBinding Key="X" Modifiers="Control" Command="{x:Static local:MainWindow.CutSelectionCommand}"/>
+        <KeyBinding Key="X" Modifiers="Control+Shift" Command="{x:Static local:MainWindow.TrimSelectionCommand}"/>
+        <KeyBinding Key="OemPlus" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomInCommand}"/>
+        <KeyBinding Key="Add" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomInCommand}"/>
+        <KeyBinding Key="OemMinus" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomOutCommand}"/>
+        <KeyBinding Key="Subtract" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomOutCommand}"/>
+        <KeyBinding Key="D0" Modifiers="Control" Command="{x:Static local:MainWindow.ResetZoomCommand}"/>
+        <KeyBinding Key="NumPad0" Modifiers="Control" Command="{x:Static local:MainWindow.ResetZoomCommand}"/>
+        <KeyBinding Key="F1" Command="{x:Static local:MainWindow.ShowShortcutsCommand}"/>
     </Window.InputBindings>
 
     <Window.CommandBindings>
@@ -24,6 +36,15 @@
         <CommandBinding Command="{x:Static ApplicationCommands.SaveAs}" CanExecute="CommandBinding_CanExecute" Executed="SaveAsCommand_Executed"/>
         <CommandBinding Command="{x:Static ApplicationCommands.Undo}" CanExecute="CommandBinding_CanExecute" Executed="UndoCommand_Executed"/>
         <CommandBinding Command="{x:Static local:MainWindow.ExportMixCommand}" CanExecute="CommandBinding_CanExecute" Executed="ExportMixCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.AddTrackCommand}" CanExecute="CommandBinding_CanExecute" Executed="AddTrackCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.PlayPauseCommand}" CanExecute="CommandBinding_CanExecute" Executed="PlayPauseCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.StopPlaybackCommand}" CanExecute="CommandBinding_CanExecute" Executed="StopPlaybackCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.ZoomInCommand}" CanExecute="CommandBinding_CanExecute" Executed="ZoomInCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.ZoomOutCommand}" CanExecute="CommandBinding_CanExecute" Executed="ZoomOutCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.ResetZoomCommand}" CanExecute="CommandBinding_CanExecute" Executed="ResetZoomCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.CutSelectionCommand}" CanExecute="CommandBinding_CanExecute" Executed="CutSelectionCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.TrimSelectionCommand}" CanExecute="CommandBinding_CanExecute" Executed="TrimSelectionCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.ShowShortcutsCommand}" CanExecute="CommandBinding_CanExecute" Executed="ShowShortcutsCommand_Executed"/>
     </Window.CommandBindings>
 
     <Grid>
@@ -84,7 +105,7 @@
                         Foreground="White"
                         Padding="10,4"
                         FontSize="12"
-                        Click="AddTrackButton_Click"/>
+                        Command="{x:Static local:MainWindow.AddTrackCommand}"/>
 
                 <Border Width="1" Height="20" Background="#555555" Margin="8,0"/>
 
@@ -156,6 +177,16 @@
                         Padding="10,4"
                         FontSize="12"
                         Command="{x:Static ApplicationCommands.Undo}"/>
+
+                <Button x:Name="ShortcutsButton"
+                        Content="Keys"
+                        Margin="4,0"
+                        Background="#444444"
+                        Foreground="White"
+                        Padding="10,4"
+                        FontSize="12"
+                        ToolTip="F1 — shortcuts / горячие клавиши"
+                        Command="{x:Static local:MainWindow.ShowShortcutsCommand}"/>
 
                 <TextBlock x:Name="ProjectPathText"
                            Text="Untitled project"
