@@ -62,9 +62,9 @@ namespace uAudio.Services
                     return (float[])cached.Peaks.Clone();
                 }
 
-                using AudioFileReader reader = new AudioFileReader(fullPath);
+                using AudioSourceReader reader = AudioSourceReader.Open(fullPath);
 
-                double totalSeconds = reader.TotalTime.TotalSeconds;
+                double totalSeconds = reader.TotalSeconds;
                 if (totalSeconds <= 0d)
                 {
                     return emptyPeaks;

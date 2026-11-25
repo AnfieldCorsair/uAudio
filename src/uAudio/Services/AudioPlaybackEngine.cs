@@ -41,14 +41,14 @@ namespace uAudio.Services
             private readonly int _targetChannels;
             private bool _disposed;
 
-            public AudioFileReader Reader { get; }
+            public AudioSourceReader Reader { get; }
             public ISampleProvider Provider { get; private set; }
 
             public FilePlaybackContext(string filePath, int targetSampleRate, int targetChannels)
             {
                 _targetSampleRate = targetSampleRate;
                 _targetChannels = targetChannels;
-                Reader = new AudioFileReader(filePath);
+                Reader = AudioSourceReader.Open(filePath);
                 Provider = BuildProvider();
             }
 
@@ -72,14 +72,14 @@ namespace uAudio.Services
 
             private void SeekCore(double seconds)
             {
-                double clampedSeconds = Math.Max(0d, Math.Min(seconds, Reader.TotalTime.TotalSeconds));
+                double clampedSeconds = Math.Max(0d, Math.Min(seconds, Reader.TotalSeconds));
                 Reader.CurrentTime = TimeSpan.FromSeconds(clampedSeconds);
                 Provider = BuildProvider();
             }
 
             private ISampleProvider BuildProvider()
             {
-                ISampleProvider provider = Reader;
+                ISampleProvider provider = new AudioSourceSampleProviderAdapter(Reader);
 
                 if (provider.WaveFormat.Channels != _targetChannels)
                 {
@@ -106,6 +106,23 @@ namespace uAudio.Services
                     Reader.Dispose();
                     _disposed = true;
                 }
+            }
+        }
+
+        private sealed class AudioSourceSampleProviderAdapter : ISampleProvider
+        {
+            private readonly AudioSourceReader _reader;
+
+            public AudioSourceSampleProviderAdapter(AudioSourceReader reader)
+            {
+                _reader = reader;
+            }
+
+            public WaveFormat WaveFormat => _reader.WaveFormat;
+
+            public int Read(float[] buffer, int offset, int count)
+            {
+                return _reader.Read(buffer, offset, count);
             }
         }
 
