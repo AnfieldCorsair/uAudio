@@ -28,6 +28,7 @@ namespace uAudio
             nameof(ExportMixCommand),
             typeof(MainWindow));
 
+        public static readonly RoutedUICommand ImportAudioCommand = new RoutedUICommand("Import Audio", nameof(ImportAudioCommand), typeof(MainWindow));
         public static readonly RoutedUICommand AddTrackCommand = new RoutedUICommand("Add Track", nameof(AddTrackCommand), typeof(MainWindow));
         public static readonly RoutedUICommand PlayPauseCommand = new RoutedUICommand("Play/Pause", nameof(PlayPauseCommand), typeof(MainWindow));
         public static readonly RoutedUICommand StopPlaybackCommand = new RoutedUICommand("Stop", nameof(StopPlaybackCommand), typeof(MainWindow));
@@ -85,6 +86,20 @@ namespace uAudio
                 CaptureSavedStateBaseline();
             }
 
+            string[] startupArgs = Environment.GetCommandLineArgs();
+            if (startupArgs.Length > 1)
+            {
+                List<string> cliPaths = startupArgs.Skip(1).Where(arg => !string.IsNullOrWhiteSpace(arg)).ToList();
+                if (cliPaths.Count > 0)
+                {
+                    Dispatcher.BeginInvoke(
+                        DispatcherPriority.Loaded,
+                        new Action(() => ImportExternalPaths(cliPaths, preferredTrackIndex: -1, dropTimelineTime: null)));
+                }
+            }
+
+            UpdateEmptyStateHint();
+
             _playheadTimer.Start();
             _autosaveTimer.Start();
         }
@@ -110,6 +125,7 @@ namespace uAudio
             }
 
             trackControl.SyncToProvider();
+            UpdateEmptyStateHint();
             UpdateTimelineWidth();
             RefreshDirtyState();
             CommandManager.InvalidateRequerySuggested();
@@ -138,6 +154,7 @@ namespace uAudio
             trackControl.CutRequested += TrackControl_CutRequested;
             trackControl.TrimRequested += TrackControl_TrimRequested;
             trackControl.SelectionPreviewChanged += TrackControl_SelectionPreviewChanged;
+            trackControl.FilesImportRequested += TrackControl_FilesImportRequested;
         }
 
         private void UnwireTrackControl(TrackRowControl trackControl)
@@ -148,6 +165,14 @@ namespace uAudio
             trackControl.CutRequested -= TrackControl_CutRequested;
             trackControl.TrimRequested -= TrackControl_TrimRequested;
             trackControl.SelectionPreviewChanged -= TrackControl_SelectionPreviewChanged;
+            trackControl.FilesImportRequested -= TrackControl_FilesImportRequested;
+        }
+
+        private void TrackControl_FilesImportRequested(TrackRowControl sourceTrack, IReadOnlyList<string> filePaths, double? dropTime)
+        {
+            SetDragOverlayVisible(false);
+            int preferredTrackIndex = _trackControls.IndexOf(sourceTrack);
+            ImportExternalPaths(filePaths, preferredTrackIndex, dropTime);
         }
 
         private void TrackControl_TrackChanged()
@@ -186,6 +211,7 @@ namespace uAudio
             }
 
             RecalculateTrackCounter();
+            UpdateEmptyStateHint();
             UpdateTimelineWidth();
             DrawRuler();
             RefreshDirtyState();
@@ -582,6 +608,7 @@ namespace uAudio
                 }
 
                 RecalculateTrackCounter();
+                UpdateEmptyStateHint();
                 _engine.Seek(currentTime);
 
                 if (wasPlaying)
@@ -630,7 +657,12 @@ namespace uAudio
 
         private void OpenCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            OpenProject();
+            OpenProjectOrAudio();
+        }
+
+        private void ImportAudioCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+        {
+            OpenAudioImportDialog();
         }
 
         private void SaveCommand_Executed(object sender, ExecutedRoutedEventArgs e)
@@ -718,7 +750,8 @@ namespace uAudio
             {
                 "RU",
                 "Ctrl+N — новый проект",
-                "Ctrl+O — открыть",
+                "Ctrl+O — открыть проект или аудиофайлы",
+                "Ctrl+I — импортировать аудиофайлы",
                 "Ctrl+S — сохранить",
                 "Ctrl+Shift+S — сохранить как",
                 "Ctrl+E — экспорт WAV",
@@ -729,11 +762,13 @@ namespace uAudio
                 "Ctrl+X — вырезать выделение",
                 "Ctrl+Shift+X — обрезать вне выделения",
                 "Ctrl++ / Ctrl+- / Ctrl+0 — зум",
+                "Drag & Drop — перетаскивание аудиофайлов из Проводника",
                 "F1 — горячие клавиши",
                 string.Empty,
                 "EN",
                 "Ctrl+N — new project",
-                "Ctrl+O — open",
+                "Ctrl+O — open project or audio files",
+                "Ctrl+I — import audio files",
                 "Ctrl+S — save",
                 "Ctrl+Shift+S — save as",
                 "Ctrl+E — export WAV",
@@ -744,6 +779,7 @@ namespace uAudio
                 "Ctrl+X — cut selection",
                 "Ctrl+Shift+X — trim outside selection",
                 "Ctrl++ / Ctrl+- / Ctrl+0 — zoom",
+                "Drag & Drop — drag audio files directly from Explorer",
                 "F1 — shortcuts"
             });
         }
@@ -816,38 +852,352 @@ namespace uAudio
             return true;
         }
 
-        private void OpenProject()
+        private void OpenProjectOrAudio()
+        {
+            OpenFileDialog dialog = new OpenFileDialog
+            {
+                Title = "Open project or audio file(s) / Открыть проект или аудиофайлы",
+                Filter = AudioFormatValidator.OpenProjectOrAudioDialogFilter,
+                Multiselect = true,
+                CheckFileExists = true
+            };
+
+            if (dialog.ShowDialog() != true || dialog.FileNames.Length == 0)
+            {
+                return;
+            }
+
+            if (dialog.FileNames.Length == 1 && IsLikelyProjectFile(dialog.FileName))
+            {
+                OpenProjectFile(dialog.FileName);
+                return;
+            }
+
+            ImportExternalPaths(dialog.FileNames, preferredTrackIndex: -1, dropTimelineTime: null);
+        }
+
+        private void OpenAudioImportDialog()
+        {
+            OpenFileDialog dialog = new OpenFileDialog
+            {
+                Title = "Import audio file(s) / Импорт аудиофайлов",
+                Filter = AudioFormatValidator.OpenFileDialogFilter,
+                Multiselect = true,
+                CheckFileExists = true
+            };
+
+            if (dialog.ShowDialog() != true || dialog.FileNames.Length == 0)
+            {
+                return;
+            }
+
+            ImportExternalPaths(dialog.FileNames, preferredTrackIndex: -1, dropTimelineTime: null);
+        }
+
+        private void OpenProjectFile(string projectFilePath)
         {
             if (!PromptSaveChangesIfNeeded())
             {
                 return;
             }
 
-            OpenFileDialog dialog = new OpenFileDialog
-            {
-                Title = "Open project",
-                Filter = ProjectFileFilter,
-                DefaultExt = ".uaudioproj",
-                CheckFileExists = true
-            };
-
-            if (dialog.ShowDialog() != true)
-            {
-                return;
-            }
-
             try
             {
-                ProjectLoadResult loadResult = ProjectFileService.Load(dialog.FileName);
+                ProjectLoadResult loadResult = ProjectFileService.Load(projectFilePath);
                 ClearRecoveryState();
                 ApplyProject(loadResult.Project);
-                _currentProjectPath = IoPath.GetFullPath(dialog.FileName);
+                _currentProjectPath = IoPath.GetFullPath(projectFilePath);
                 CaptureSavedStateBaseline();
                 ShowMissingFilesWarning(loadResult.MissingFiles);
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Failed to open project.\n\n{ex.Message}", "Open Project", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private static bool IsLikelyProjectFile(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                return false;
+            }
+
+            string ext = IoPath.GetExtension(filePath.Trim().Trim('"'));
+            if (string.Equals(ext, ".uaudioproj", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (string.Equals(ext, ".json", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    string preview = File.ReadAllText(filePath);
+                    return preview.Contains("\"formatVersion\"", StringComparison.OrdinalIgnoreCase) ||
+                           preview.Contains("\"tracks\"", StringComparison.OrdinalIgnoreCase);
+                }
+                catch
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void MainWindow_DragOver(object sender, DragEventArgs e)
+        {
+            if (e.Handled)
+            {
+                return;
+            }
+
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effects = DragDropEffects.Copy;
+                SetDragOverlayVisible(true);
+            }
+            else
+            {
+                e.Effects = DragDropEffects.None;
+                SetDragOverlayVisible(false);
+            }
+
+            e.Handled = true;
+        }
+
+        private void MainWindow_DragLeave(object sender, DragEventArgs e)
+        {
+            SetDragOverlayVisible(false);
+        }
+
+        private void MainWindow_Drop(object sender, DragEventArgs e)
+        {
+            SetDragOverlayVisible(false);
+            ClearAllTrackDropHighlights();
+
+            if (e.Handled || !e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                return;
+            }
+
+            if (e.Data.GetData(DataFormats.FileDrop) is not string[] droppedPaths || droppedPaths.Length == 0)
+            {
+                return;
+            }
+
+            double? dropTime = null;
+            if (TimelineGrid != null)
+            {
+                Point pt = e.GetPosition(TimelineGrid);
+                if (pt.X >= AppConstants.LeftPanelWidth && pt.Y >= 0d)
+                {
+                    dropTime = Math.Max(0d, (pt.X - AppConstants.LeftPanelWidth) / _pixelsPerSecond);
+                }
+            }
+
+            e.Handled = true;
+            ImportExternalPaths(droppedPaths, preferredTrackIndex: -1, dropTimelineTime: dropTime);
+        }
+
+        private void SetDragOverlayVisible(bool visible)
+        {
+            if (DragDropOverlay != null)
+            {
+                DragDropOverlay.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private void ClearAllTrackDropHighlights()
+        {
+            foreach (TrackRowControl track in _trackControls)
+            {
+                track.SetDropHighlight(false);
+            }
+        }
+
+        private void ImportExternalPaths(IReadOnlyList<string> rawPaths, int preferredTrackIndex, double? dropTimelineTime)
+        {
+            if (rawPaths == null || rawPaths.Count == 0)
+            {
+                return;
+            }
+
+            if (rawPaths.Count == 1 && IsLikelyProjectFile(rawPaths[0]))
+            {
+                OpenProjectFile(rawPaths[0]);
+                return;
+            }
+
+            List<string> candidateAudioFiles = AudioFormatValidator.ExpandDroppedPaths(
+                rawPaths,
+                out bool projectDetected,
+                out string? firstProjectPath);
+
+            if (candidateAudioFiles.Count == 0 && projectDetected && !string.IsNullOrWhiteSpace(firstProjectPath))
+            {
+                OpenProjectFile(firstProjectPath);
+                return;
+            }
+
+            if (candidateAudioFiles.Count == 0)
+            {
+                MessageBox.Show(
+                    "Не найдено поддерживаемых аудиофайлов для добавления.\n\nПоддерживаемые форматы: WAV, MP3, OGG, FLAC, AIFF, WMA, AAC, M4A, MP4, OPUS.",
+                    "Импорт аудио",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            List<ValidatedAudioImportItem> validItems = new List<ValidatedAudioImportItem>();
+            List<string> invalidMessages = new List<string>();
+
+            Mouse.OverrideCursor = Cursors.Wait;
+            try
+            {
+                foreach (string path in candidateAudioFiles)
+                {
+                    AudioFormatValidationResult validation = AudioAnalyzer.ValidateFile(path);
+                    if (validation.IsValid)
+                    {
+                        validItems.Add(new ValidatedAudioImportItem
+                        {
+                            FilePath = validation.FilePath,
+                            DurationSeconds = validation.DurationSeconds
+                        });
+                    }
+                    else
+                    {
+                        invalidMessages.Add($"{IoPath.GetFileName(path)}: {validation.Message}");
+                    }
+                }
+            }
+            finally
+            {
+                Mouse.OverrideCursor = null;
+            }
+
+            if (validItems.Count == 0)
+            {
+                string details = string.Join(Environment.NewLine, invalidMessages.Take(8));
+                if (invalidMessages.Count > 8)
+                {
+                    details += $"{Environment.NewLine}...";
+                }
+
+                MessageBox.Show(
+                    $"Не удалось открыть выбранные аудиофайлы:{Environment.NewLine}{Environment.NewLine}{details}",
+                    "Ошибка формата",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                return;
+            }
+
+            List<string> trackNames = _trackControls.Select(t => t.TrackName).ToList();
+            AudioImportOptionsDialog optionsDialog = new AudioImportOptionsDialog(
+                validItems,
+                trackNames,
+                preferredTrackIndex,
+                dropTimelineTime)
+            {
+                Owner = IsLoaded ? this : null
+            };
+
+            if (optionsDialog.ShowDialog() != true || optionsDialog.ResultPlan == null)
+            {
+                return;
+            }
+
+            ExecuteAudioImportPlan(optionsDialog.ResultPlan);
+
+            if (invalidMessages.Count > 0)
+            {
+                string skipped = string.Join(Environment.NewLine, invalidMessages.Take(6));
+                if (invalidMessages.Count > 6)
+                {
+                    skipped += $"{Environment.NewLine}...";
+                }
+
+                MessageBox.Show(
+                    $"Импортировано файлов: {validItems.Count}, пропущено из-за ошибок чтения: {invalidMessages.Count}.{Environment.NewLine}{Environment.NewLine}{skipped}",
+                    "Импорт завершён с предупреждениями",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+
+        private void ExecuteAudioImportPlan(AudioImportPlan plan)
+        {
+            if (plan.Decisions.Count == 0)
+            {
+                return;
+            }
+
+            SaveUndoSnapshot();
+
+            TrackRowControl? sharedNewTrack = null;
+            Dictionary<TrackRowControl, double> nextSequentialStartByTrack = new Dictionary<TrackRowControl, double>();
+
+            foreach (AudioImportDecision decision in plan.Decisions)
+            {
+                TrackRowControl targetTrack;
+
+                if (decision.CreateDedicatedNewTrack)
+                {
+                    targetTrack = AddTrack();
+                    string clipTitle = IoPath.GetFileNameWithoutExtension(decision.FilePath);
+                    if (!string.IsNullOrWhiteSpace(clipTitle))
+                    {
+                        targetTrack.SetTrackName($"{targetTrack.TrackName} ({clipTitle})");
+                    }
+                }
+                else if (decision.ShareSingleNewTrack)
+                {
+                    sharedNewTrack ??= AddTrack();
+                    targetTrack = sharedNewTrack;
+                }
+                else if (decision.ExistingTrackIndex >= 0 && decision.ExistingTrackIndex < _trackControls.Count)
+                {
+                    targetTrack = _trackControls[decision.ExistingTrackIndex];
+                }
+                else
+                {
+                    sharedNewTrack ??= AddTrack();
+                    targetTrack = sharedNewTrack;
+                }
+
+                double? preferredStart = null;
+                if (nextSequentialStartByTrack.TryGetValue(targetTrack, out double nextStart))
+                {
+                    preferredStart = nextStart;
+                }
+                else if (plan.PreferredStartTime.HasValue)
+                {
+                    preferredStart = plan.PreferredStartTime.Value;
+                }
+
+                double nextAfterClip = targetTrack.AppendValidatedClip(
+                    decision.FilePath,
+                    decision.DurationSeconds,
+                    preferredStart);
+
+                nextSequentialStartByTrack[targetTrack] = nextAfterClip;
+            }
+
+            UpdateEmptyStateHint();
+            UpdateTimelineWidth();
+            DrawRuler();
+            RefreshDirtyState();
+            CommandManager.InvalidateRequerySuggested();
+        }
+
+        private void UpdateEmptyStateHint()
+        {
+            if (EmptyDropHintBorder != null)
+            {
+                EmptyDropHintBorder.Visibility = _trackControls.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             }
         }
 
@@ -1018,6 +1368,7 @@ namespace uAudio
                 }
 
                 RecalculateTrackCounter();
+                UpdateEmptyStateHint();
                 _engine.Seek(Math.Max(0d, project.CurrentTime));
                 UndoManager.Clear();
                 CommandManager.InvalidateRequerySuggested();
@@ -1068,6 +1419,7 @@ namespace uAudio
             _trackControls.Clear();
             _activeSelectionTrack = null;
             _trackCounter = 0;
+            UpdateEmptyStateHint();
         }
 
         private ProjectFileModel CaptureProjectModel()
@@ -1306,6 +1658,12 @@ namespace uAudio
                 if (name.StartsWith("Track ", StringComparison.OrdinalIgnoreCase))
                 {
                     string numberPart = name.Substring("Track ".Length);
+                    int spaceIndex = numberPart.IndexOf(' ');
+                    if (spaceIndex > 0)
+                    {
+                        numberPart = numberPart.Substring(0, spaceIndex);
+                    }
+
                     if (int.TryParse(numberPart, out int number) && number > maxTrackNumber)
                     {
                         maxTrackNumber = number;

@@ -73,6 +73,7 @@ namespace uAudio.Controls
         public event Action<TrackRowControl, double, double>? CutRequested;
         public event Action<TrackRowControl, double, double>? TrimRequested;
         public event Action<TrackRowControl, double, double, bool>? SelectionPreviewChanged;
+        public event Action<TrackRowControl, IReadOnlyList<string>, double?>? FilesImportRequested;
 
         public bool HasUsableSelection => _hasSelectionVisual && (_selectionEndTime - _selectionStartTime) > DurationEpsilon;
 
@@ -206,12 +207,20 @@ namespace uAudio.Controls
         {
             OpenFileDialog dialog = new OpenFileDialog
             {
-                Title = "Select audio file",
-                Filter = AudioFormatValidator.OpenFileDialogFilter
+                Title = "Select audio file(s) / Выберите аудиофайл(ы)",
+                Filter = AudioFormatValidator.OpenFileDialogFilter,
+                Multiselect = true,
+                CheckFileExists = true
             };
 
-            if (dialog.ShowDialog() != true)
+            if (dialog.ShowDialog() != true || dialog.FileNames.Length == 0)
             {
+                return;
+            }
+
+            if (dialog.FileNames.Length > 1 && FilesImportRequested != null)
+            {
+                FilesImportRequested.Invoke(this, dialog.FileNames, null);
                 return;
             }
 
@@ -226,18 +235,28 @@ namespace uAudio.Controls
                 return;
             }
 
-            double duration = validation.DurationSeconds;
-
             UndoSnapshotRequested?.Invoke();
+            AppendValidatedClip(validation.FilePath, validation.DurationSeconds, preferredStartTime: null);
+        }
 
-            double startTime = Clips.Count == 0 ? 0d : Clips.Max(c => c.EndTime) + ClipGapSeconds;
+        public double AppendValidatedClip(string filePath, double durationSeconds, double? preferredStartTime = null)
+        {
+            double startTime;
+            if (preferredStartTime.HasValue)
+            {
+                startTime = Math.Max(0d, preferredStartTime.Value);
+            }
+            else
+            {
+                startTime = Clips.Count == 0 ? 0d : Clips.Max(c => c.EndTime) + ClipGapSeconds;
+            }
 
             AudioClipModel clip = new AudioClipModel
             {
-                FilePath = validation.FilePath,
+                FilePath = filePath,
                 StartTime = startTime,
                 OffsetInFile = 0d,
-                Duration = duration
+                Duration = durationSeconds
             };
 
             Clips.Add(clip);
@@ -245,6 +264,72 @@ namespace uAudio.Controls
             SyncToProvider();
             RedrawClips();
             TrackChanged?.Invoke();
+
+            return clip.EndTime + ClipGapSeconds;
+        }
+
+        private void TrackRowControl_PreviewDragOver(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effects = DragDropEffects.Copy;
+                SetDropHighlight(true);
+            }
+            else
+            {
+                e.Effects = DragDropEffects.None;
+                SetDropHighlight(false);
+            }
+
+            e.Handled = true;
+        }
+
+        private void TrackRowControl_PreviewDragLeave(object sender, DragEventArgs e)
+        {
+            SetDropHighlight(false);
+        }
+
+        private void TrackRowControl_PreviewDrop(object sender, DragEventArgs e)
+        {
+            SetDropHighlight(false);
+
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                return;
+            }
+
+            if (e.Data.GetData(DataFormats.FileDrop) is not string[] droppedPaths || droppedPaths.Length == 0)
+            {
+                return;
+            }
+
+            double? dropTime = null;
+            if (ClipCanvas != null)
+            {
+                Point canvasPoint = e.GetPosition(ClipCanvas);
+                if (canvasPoint.X >= 0d && canvasPoint.Y >= 0d && canvasPoint.Y <= ActualHeight)
+                {
+                    dropTime = Math.Max(0d, canvasPoint.X / _pixelsPerSecond);
+                }
+            }
+
+            e.Handled = true;
+            FilesImportRequested?.Invoke(this, droppedPaths, dropTime);
+        }
+
+        public void SetDropHighlight(bool highlighted)
+        {
+            if (RootBorder == null || ClipCanvas == null)
+            {
+                return;
+            }
+
+            RootBorder.Background = highlighted
+                ? new SolidColorBrush(Color.FromRgb(36, 54, 74))
+                : new SolidColorBrush(Color.FromRgb(30, 30, 30));
+            ClipCanvas.Background = highlighted
+                ? new SolidColorBrush(Color.FromRgb(32, 46, 72))
+                : new SolidColorBrush(Color.FromRgb(26, 26, 46));
         }
 
         private void DeleteTrackButton_Click(object sender, RoutedEventArgs e)

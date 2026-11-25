@@ -2,8 +2,13 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              Height="120"
-             MinHeight="80">
-    <Border BorderBrush="#555555" BorderThickness="0,0,0,1" Background="#1E1E1E">
+             MinHeight="80"
+             AllowDrop="True"
+             PreviewDragEnter="TrackRowControl_PreviewDragOver"
+             PreviewDragOver="TrackRowControl_PreviewDragOver"
+             PreviewDragLeave="TrackRowControl_PreviewDragLeave"
+             PreviewDrop="TrackRowControl_PreviewDrop">
+    <Border x:Name="RootBorder" BorderBrush="#555555" BorderThickness="0,0,0,1" Background="#1E1E1E">
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="160"/>
@@ -61,7 +66,7 @@
                     </StackPanel>
 
                     <Button x:Name="AddFileButton"
-                            Content="+ Add File"
+                            Content="+ Add File(s)"
                             FontSize="10"
                             Background="#225522"
                             Foreground="White"

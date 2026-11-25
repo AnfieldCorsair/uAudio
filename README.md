@@ -68,7 +68,8 @@ dotnet test uAudio.sln
 
 | Действие | Описание |
 |----------|----------|
-| Добавить клип | Нажмите "+" на дорожке и выберите аудиофайл |
+| Добавить клип(ы) | Нажмите `Import Audio` (`Ctrl+I`), `Open` (`Ctrl+O`), `+ Add File(s)` на дорожке или перетащите файлы/папки из Проводника |
+| Drag & Drop из Проводника | Перетащите один или несколько аудиофайлов прямо в окно или на дорожку — появится выбор целевой дорожки или создания отдельной дорожки под каждый звук |
 | Переместить клип | Перетащите клип мышкой |
 | Cut/Trim | Выделите диапазон правой кнопкой мыши или используйте Ctrl+X / Ctrl+Shift+X |
 
@@ -79,7 +80,8 @@ dotnet test uAudio.sln
 
 | Комбинация | Действие |
 |------------|----------|
-| Ctrl+N / Ctrl+O | Новый проект / открыть |
+| Ctrl+N / Ctrl+O | Новый проект / открыть проект или аудио |
+| Ctrl+I | Импортировать аудиофайлы |
 | Ctrl+S / Ctrl+Shift+S | Сохранить / сохранить как |
 | Ctrl+E | Экспорт WAV |
 | Ctrl+Z | Отмена |
@@ -94,13 +96,14 @@ dotnet test uAudio.sln
 
 ```
 Аудио файлы:
-├── .wav  — Waveform Audio File Format
-├── .mp3  — MPEG Audio Layer III
-├── .aiff — Audio Interchange File Format
-├── .aac  — Advanced Audio Coding
-├── .m4a  — MPEG-4 Audio
+├── .wav  — Waveform Audio File Format (PCM 8/16/24/32-bit, IEEE Float 32/64-bit, Extensible, A-Law/Mu-Law)
+├── .mp3  — MPEG Audio Layer III (Media Foundation + NLayer managed decoder)
+├── .ogg / .oga — Ogg Vorbis
 ├── .flac — Free Lossless Audio Codec
-└── .wma  — Windows Media Audio
+├── .aiff / .aif — Audio Interchange File Format
+├── .aac / .m4a / .mp4 — Advanced Audio Coding / MPEG-4 Audio
+├── .opus / .webm — Opus Audio
+└── .wma / .asf — Windows Media Audio
 ```
 
 ### Формат проекта

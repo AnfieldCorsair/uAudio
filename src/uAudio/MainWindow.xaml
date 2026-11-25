@@ -6,11 +6,17 @@
         Width="1280"
         Height="720"
         Background="#1E1E1E"
+        AllowDrop="True"
+        DragEnter="MainWindow_DragOver"
+        DragOver="MainWindow_DragOver"
+        DragLeave="MainWindow_DragLeave"
+        Drop="MainWindow_Drop"
         WindowStartupLocation="CenterScreen"
         Closing="Window_Closing">
     <Window.InputBindings>
         <KeyBinding Key="N" Modifiers="Control" Command="{x:Static ApplicationCommands.New}"/>
         <KeyBinding Key="O" Modifiers="Control" Command="{x:Static ApplicationCommands.Open}"/>
+        <KeyBinding Key="I" Modifiers="Control" Command="{x:Static local:MainWindow.ImportAudioCommand}"/>
         <KeyBinding Key="S" Modifiers="Control" Command="{x:Static ApplicationCommands.Save}"/>
         <KeyBinding Key="S" Modifiers="Control+Shift" Command="{x:Static ApplicationCommands.SaveAs}"/>
         <KeyBinding Key="Z" Modifiers="Control" Command="{x:Static ApplicationCommands.Undo}"/>
@@ -32,6 +38,7 @@
     <Window.CommandBindings>
         <CommandBinding Command="{x:Static ApplicationCommands.New}" CanExecute="CommandBinding_CanExecute" Executed="NewCommand_Executed"/>
         <CommandBinding Command="{x:Static ApplicationCommands.Open}" CanExecute="CommandBinding_CanExecute" Executed="OpenCommand_Executed"/>
+        <CommandBinding Command="{x:Static local:MainWindow.ImportAudioCommand}" CanExecute="CommandBinding_CanExecute" Executed="ImportAudioCommand_Executed"/>
         <CommandBinding Command="{x:Static ApplicationCommands.Save}" CanExecute="CommandBinding_CanExecute" Executed="SaveCommand_Executed"/>
         <CommandBinding Command="{x:Static ApplicationCommands.SaveAs}" CanExecute="CommandBinding_CanExecute" Executed="SaveAsCommand_Executed"/>
         <CommandBinding Command="{x:Static ApplicationCommands.Undo}" CanExecute="CommandBinding_CanExecute" Executed="UndoCommand_Executed"/>
@@ -70,7 +77,17 @@
                         Foreground="White"
                         Padding="10,4"
                         FontSize="12"
+                        ToolTip="Ctrl+O — открыть проект или аудиофайлы"
                         Command="{x:Static ApplicationCommands.Open}"/>
+
+                <Button Content="Import Audio"
+                        Margin="4,0"
+                        Background="#2E6B3E"
+                        Foreground="White"
+                        Padding="10,4"
+                        FontSize="12"
+                        ToolTip="Ctrl+I — импортировать один или несколько аудиофайлов"
+                        Command="{x:Static local:MainWindow.ImportAudioCommand}"/>
 
                 <Button Content="Save"
                         Margin="4,0"
@@ -227,9 +244,32 @@
                       Grid.Row="2"
                       HorizontalScrollBarVisibility="Auto"
                       VerticalScrollBarVisibility="Auto"
+                      AllowDrop="True"
                       ScrollChanged="TimelineScrollViewer_ScrollChanged">
-            <Grid x:Name="TimelineGrid">
+            <Grid x:Name="TimelineGrid" Background="Transparent" AllowDrop="True">
                 <StackPanel x:Name="TracksPanel" Orientation="Vertical"/>
+
+                <Border x:Name="EmptyDropHintBorder"
+                        IsHitTestVisible="False"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Top"
+                        Margin="200,40,0,0"
+                        Padding="20,14"
+                        CornerRadius="6"
+                        Background="#25252B"
+                        BorderBrush="#444452"
+                        BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="Перетащите аудиофайлы из Проводника прямо сюда"
+                                   Foreground="#DDDDDD"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"/>
+                        <TextBlock Text="или нажмите «Import Audio» / «Open» / «Add Track»"
+                                   Foreground="#999999"
+                                   FontSize="12"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Border>
 
                 <Canvas x:Name="PlayheadCanvas" IsHitTestVisible="False">
                     <Line x:Name="PlayheadLine"
@@ -241,6 +281,22 @@
                           StrokeThickness="2"
                           IsHitTestVisible="False"/>
                 </Canvas>
+
+                <Border x:Name="DragDropOverlay"
+                        Visibility="Collapsed"
+                        IsHitTestVisible="False"
+                        Background="#661A3A5C"
+                        BorderBrush="#66B2FF"
+                        BorderThickness="2"
+                        Margin="4"
+                        CornerRadius="6">
+                    <TextBlock Text="Отпустите файлы для импорта в проект"
+                               Foreground="White"
+                               FontSize="18"
+                               FontWeight="SemiBold"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"/>
+                </Border>
             </Grid>
         </ScrollViewer>
     </Grid>
